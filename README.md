@@ -25,10 +25,25 @@ terminal to stop it.
   `inventory-manifest.json` from the image filenames
   (`CODE-NNNN-Description-Designer.png`). Large previews, the
   `originals/` folder, and any non-matching files are skipped.
-- **Commit & Push** — `git add -A`, commit (using your message, or an
-  auto-generated one), `git pull --rebase`, then `git push`. Output is
-  shown in the console panel.
-- **Refresh git status** — shows the current `git status`.
+- **Commit & Push** — for **both** repos (the website and this app, since
+  it's a living app): `git add -A`, commit (your message or an
+  auto-generated one), `git pull --rebase`, then `git push`. A repo with
+  no changes is skipped; a repo with no remote is committed but not pushed.
+  Output for each repo is shown in the console panel.
+- **Refresh git status** — shows `git status` for both repos.
+
+## Git remote for this app
+
+This folder is its own git repo. To enable pushing it, create an empty
+repo on GitHub (no README/license), then point this repo at it:
+
+```bash
+cd "Documents/Code/maker-cave-console"
+git remote add origin https://github.com/<you>/maker-cave-console.git
+git push -u origin main
+```
+
+After that, the Commit & Push button keeps it in sync automatically.
 
 ## Notes
 
