@@ -1,18 +1,18 @@
-# Josiah's Maker Cave — Control Console
+# Josiah's Maker Cave — Command Center
 
 A small, dependency-free control panel for maintaining the website repo.
 It runs a local web UI in your browser with buttons for common tasks.
 
 ## Run it
 
-**Easiest:** double-click `Maker Cave Console.command` in Finder.
+**Easiest:** double-click `Command Center.command` in Finder.
 (First time only: right-click → Open, to get past the macOS "unidentified
 developer" warning.)
 
 **Or from a terminal:**
 
 ```bash
-cd "Documents/Code/maker-cave-console"
+cd "Documents/Code/command-center"
 python3 console.py
 ```
 
@@ -32,28 +32,17 @@ terminal to stop it.
   Output for each repo is shown in the console panel.
 - **Refresh git status** — shows `git status` for both repos.
 
-## Git remote for this app
+## Repos
 
-This folder is its own git repo. To enable pushing it, create an empty
-repo on GitHub (no README/license), then point this repo at it:
+- **Website**: `mywebsiterepository-Iknowtotallyoriginal` (sibling folder)
+- **Command Center**: this repo — https://github.com/DuckySonadar/Command-Center
 
-```bash
-cd "Documents/Code/maker-cave-console"
-git remote add origin https://github.com/<you>/maker-cave-console.git
-git push -u origin main
-```
+If you move things, point the app at the website with an env var:
+`MAKERCAVE_REPO=/path/to/repo python3 console.py`
 
-After that, the Commit & Push button keeps it in sync automatically.
-
-## Notes
-
-- The app expects the website repo to be a sibling folder named
-  `mywebsiterepository-Iknowtotallyoriginal`. If you move things, point it
-  at the repo with an env var:
-  `MAKERCAVE_REPO=/path/to/repo python3 console.py`
-- Push uses your normal git credentials (the macOS Keychain helper). If a
-  push ever fails for auth, run one `git push` manually in the terminal to
-  refresh the stored token.
+Push uses your normal git credentials (the macOS Keychain helper). If a
+push ever fails for auth, run one `git push` manually in the terminal to
+refresh the stored token.
 
 ## Adding a new utility later
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Josiah's Maker Cave — Control Console
-=====================================
+Josiah's Maker Cave — Command Center
+====================================
 A tiny, dependency-free control panel for managing the website repo.
 
 It serves a local web UI (http://127.0.0.1:8770) with buttons that run
@@ -34,11 +34,11 @@ DEFAULT_REPO = os.path.normpath(
     os.path.join(SCRIPT_DIR, "..", "mywebsiterepository-Iknowtotallyoriginal")
 )
 WEBSITE_REPO = os.environ.get("MAKERCAVE_REPO", DEFAULT_REPO)
-# This app is a "living app" — its own folder is a git repo too, and gets
-# committed & pushed alongside the website.
-CONSOLE_REPO = SCRIPT_DIR
+# This app ("Command Center") is a "living app" — its own folder is a git
+# repo too, and gets committed & pushed alongside the website.
+COMMAND_CENTER_REPO = SCRIPT_DIR
 # Repos the Commit & Push button operates on, in order.
-REPOS = [("Website", WEBSITE_REPO), ("Console", CONSOLE_REPO)]
+REPOS = [("Website", WEBSITE_REPO), ("Command Center", COMMAND_CENTER_REPO)]
 
 INVENTORY = os.path.join(WEBSITE_REPO, "inventory")
 MANIFEST = os.path.join(WEBSITE_REPO, "inventory-manifest.json")
@@ -221,7 +221,7 @@ PAGE = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Maker Cave Control Console</title>
+<title>Maker Cave Command Center</title>
 <style>
   :root {
     --orange:#F54D27; --yellow:#F5E427; --mint:#25E8BB; --purple:#B038D1;
@@ -271,7 +271,7 @@ PAGE = """<!DOCTYPE html>
 </head>
 <body>
   <p class="kicker">JOSIAH'S MAKER CAVE</p>
-  <h1>CONTROL <span class="a">CON</span><span class="b">SOLE</span></h1>
+  <h1>COMMAND <span class="a">CEN</span><span class="b">TER</span></h1>
 
   <div class="actions">
     <div class="card manifest">
@@ -351,12 +351,12 @@ def main():
               f"Another copy may already be running at {url}")
         return
     print("┌─────────────────────────────────────────────┐")
-    print("│  Josiah's Maker Cave — Control Console       │")
+    print("│  Josiah's Maker Cave — Command Center        │")
     print("└─────────────────────────────────────────────┘")
-    print(f"  Website : {WEBSITE_REPO}")
-    print(f"  Console : {CONSOLE_REPO}")
-    print(f"  Open    : {url}")
-    print("  Stop    : press Ctrl-C\n")
+    print(f"  Website        : {WEBSITE_REPO}")
+    print(f"  Command Center : {COMMAND_CENTER_REPO}")
+    print(f"  Open           : {url}")
+    print("  Stop           : press Ctrl-C\n")
     threading.Timer(0.6, lambda: webbrowser.open(url)).start()
     try:
         server.serve_forever()
