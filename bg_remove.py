@@ -35,47 +35,105 @@ import numpy as np
 
 
 # --------------------------------------------------------------------------
-# Background estimation & color distance
+# Image loading (incl. HEIC/HEIF), background estimation & color distance
 # --------------------------------------------------------------------------
+
+def load_image(path):
+    """Read an image as uint8 BGR. Falls back to Pillow (with the
+    pillow-heif plugin when present) for formats OpenCV can't read,
+    notably iPhone HEIC/HEIF files."""
+    img = cv2.imread(path, cv2.IMREAD_COLOR)
+    if img is not None:
+        return img
+    try:
+        from PIL import Image
+        try:
+            import pillow_heif
+            pillow_heif.register_heif_opener()
+        except ImportError:
+            pass
+        with Image.open(path) as im:
+            rgb = np.asarray(im.convert("RGB"))
+        return cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+    except ImportError:
+        sys.exit(f"error: could not read {path} with OpenCV, and Pillow "
+                 "is not installed. For HEIC/HEIF support run: "
+                 "pip install pillow pillow-heif")
+    except Exception as e:
+        sys.exit(f"error: could not read {path}: {e}\n"
+                 "(for HEIC/HEIF support: pip install pillow pillow-heif)")
+
 
 def to_lab(bgr):
     """uint8 BGR -> float32 Lab (OpenCV scaling, all channels 0..255)."""
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
 
 
-def estimate_bg_color(lab, border_frac=0.04, clusters=3):
-    """Dominant Lab color of the image border.
-
-    Samples a frame of `border_frac` * min(h, w) pixels around the edge,
-    k-means it into a few clusters, and returns the biggest cluster's
-    center. K-means (rather than a plain mean) keeps a logo or object
-    touching the edge from skewing the estimate.
-    """
+def _border_samples(lab, border_frac):
     h, w = lab.shape[:2]
     b = max(2, int(round(border_frac * min(h, w))))
     strips = [lab[:b, :], lab[-b:, :], lab[:, :b], lab[:, -b:]]
     samples = np.concatenate([s.reshape(-1, 3) for s in strips]).astype(np.float32)
-
-    if len(samples) > 5000:  # k-means doesn't need every pixel
-        idx = np.random.default_rng(0).choice(len(samples), 5000, replace=False)
+    if len(samples) > 8000:  # k-means doesn't need every pixel
+        idx = np.random.default_rng(0).choice(len(samples), 8000, replace=False)
         samples = samples[idx]
-
-    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 0.5)
-    _, labels, centers = cv2.kmeans(samples, clusters, None, criteria, 3,
-                                    cv2.KMEANS_PP_CENTERS)
-    counts = np.bincount(labels.ravel(), minlength=clusters)
-    return centers[int(np.argmax(counts))]
+    return samples
 
 
-def color_distance(lab, bg_lab, lightness_weight=1.0):
-    """Per-pixel Euclidean Lab distance from the background color.
+def estimate_bg_colors(lab, border_frac=0.04, max_colors=1, min_share=0.08):
+    """Dominant Lab color(s) of the image border.
 
-    lightness_weight < 1 downweights the L channel, which helps when the
-    background has shadows or a brightness gradient but a stable hue.
+    Samples a frame of `border_frac` * min(h, w) pixels around the edge
+    and k-means it. With max_colors=1 you get the single biggest
+    cluster; higher values also keep secondary clusters that cover at
+    least `min_share` of the border — useful when the backdrop has a
+    visible gradient, vignette, or two-toned lighting, so the
+    "background" is really a range of colors. K-means (rather than a
+    plain mean) keeps an object touching the edge from skewing things.
     """
-    diff = lab - bg_lab.reshape(1, 1, 3)
-    diff[..., 0] *= lightness_weight
-    return np.sqrt((diff ** 2).sum(axis=2))
+    samples = _border_samples(lab, border_frac)
+    k = max(3, max_colors)
+    criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 0.5)
+    _, labels, centers = cv2.kmeans(samples, k, None, criteria, 3,
+                                    cv2.KMEANS_PP_CENTERS)
+    counts = np.bincount(labels.ravel(), minlength=k)
+    order = np.argsort(counts)[::-1]
+    kept = [centers[order[0]]]
+    for i in order[1:max_colors]:
+        if counts[i] >= min_share * len(samples):
+            kept.append(centers[i])
+    return np.array(kept, np.float32)
+
+
+def color_distance(lab, bg_colors, lightness_weight=1.0, sat_weight=1.0):
+    """Per-pixel weighted Lab distance to the *nearest* background color.
+
+    lightness_weight scales the L channel: <1 tolerates shadows and
+    brightness gradients, >1 makes brightness differences count more.
+    sat_weight scales the a/b (chroma) channels: >1 makes saturation and
+    hue differences count more — handy when the object differs from the
+    backdrop mainly in colorfulness rather than brightness.
+    """
+    bg_colors = np.asarray(bg_colors, np.float32).reshape(-1, 3)
+    weights = np.array([lightness_weight, sat_weight, sat_weight],
+                       np.float32).reshape(1, 1, 3)
+    dist = None
+    for bg in bg_colors:
+        diff = (lab - bg.reshape(1, 1, 3)) * weights
+        d = np.sqrt((diff ** 2).sum(axis=2))
+        dist = d if dist is None else np.minimum(dist, d)
+    return dist
+
+
+def auto_tolerance(lab, bg_colors, border_frac, lightness_weight, sat_weight,
+                   percentile=99.0, margin=1.35, floor=10.0):
+    """Pick a tolerance from the border itself: how far do genuine
+    background pixels stray from the background model? The returned
+    threshold sits `margin` above the `percentile`-th of those
+    distances, so backdrop texture/noise stays background."""
+    samples = _border_samples(lab, border_frac).reshape(1, -1, 3)
+    d = color_distance(samples, bg_colors, lightness_weight, sat_weight)
+    return max(float(np.percentile(d, percentile)) * margin, floor)
 
 
 # --------------------------------------------------------------------------
@@ -395,17 +453,29 @@ def main():
                     help="generate a synthetic test image at INPUT and exit")
 
     g = ap.add_argument_group("background & threshold")
-    g.add_argument("--tolerance", type=float, default=28.0,
+    g.add_argument("--tolerance", default="28",
                    help="Lab color distance from background that counts as "
-                        "foreground (default 28; lower keeps more)")
-    g.add_argument("--bg-color", metavar="R,G,B",
-                   help="background color override; skips auto-estimation")
+                        "foreground (default 28; lower keeps more), or "
+                        "'auto' to derive it from the border pixels")
+    g.add_argument("--bg-color", metavar="R,G,B[;R,G,B...]",
+                   help="background color override; skips auto-estimation. "
+                        "Separate several colors with ';' to model a "
+                        "multi-toned backdrop")
+    g.add_argument("--bg-colors", type=int, default=1, metavar="N",
+                   help="model the background with up to N auto-estimated "
+                        "colors instead of 1 — use 2-4 for backdrops with "
+                        "gradients or uneven lighting (default 1)")
     g.add_argument("--border-frac", type=float, default=0.04,
                    help="border width sampled for bg estimation, as a "
                         "fraction of image size (default 0.04)")
     g.add_argument("--lightness-weight", type=float, default=1.0,
                    help="weight of the L (brightness) channel in color "
-                        "distance; <1 tolerates shadows/gradients (default 1)")
+                        "distance; <1 tolerates shadows/gradients, >1 "
+                        "emphasizes brightness (default 1)")
+    g.add_argument("--sat-weight", type=float, default=1.0,
+                   help="weight of the a/b (saturation & hue) channels in "
+                        "color distance; >1 separates objects that differ "
+                        "from the backdrop mainly in colorfulness (default 1)")
 
     g = ap.add_argument_group("mask cleanup")
     g.add_argument("--open", type=int, default=3, dest="open_size",
@@ -461,24 +531,37 @@ def main():
               f"cutout.png --predict --debug")
         return
 
-    img = cv2.imread(args.input, cv2.IMREAD_COLOR)
-    if img is None:
-        sys.exit(f"error: could not read {args.input}")
+    img = load_image(args.input)
     out_path = args.output or os.path.splitext(args.input)[0] + "_cutout.png"
     stem = os.path.splitext(out_path)[0]
 
     lab = to_lab(img)
     if args.bg_color:
-        r, g_, b = (int(v) for v in args.bg_color.split(","))
-        bg_lab = to_lab(np.array([[[b, g_, r]]], np.uint8))[0, 0]
+        bg_colors = []
+        for spec in args.bg_color.split(";"):
+            r, g_, b = (int(v) for v in spec.split(","))
+            bg_colors.append(to_lab(np.array([[[b, g_, r]]], np.uint8))[0, 0])
+        bg_colors = np.array(bg_colors, np.float32)
     else:
-        bg_lab = estimate_bg_color(lab, args.border_frac)
-    bg_bgr = cv2.cvtColor(bg_lab.reshape(1, 1, 3).astype(np.uint8),
-                          cv2.COLOR_LAB2BGR)[0, 0]
-    print(f"background color ≈ RGB({bg_bgr[2]}, {bg_bgr[1]}, {bg_bgr[0]})")
+        bg_colors = estimate_bg_colors(lab, args.border_frac,
+                                       max_colors=args.bg_colors)
+    shown = []
+    for c in bg_colors:
+        bgr = cv2.cvtColor(c.reshape(1, 1, 3).astype(np.uint8),
+                           cv2.COLOR_LAB2BGR)[0, 0]
+        shown.append(f"RGB({bgr[2]}, {bgr[1]}, {bgr[0]})")
+    print("background color ≈ " + ", ".join(shown))
 
-    dist = color_distance(lab, bg_lab, args.lightness_weight)
-    mask = build_mask(dist, args.tolerance)
+    if str(args.tolerance).lower() == "auto":
+        tolerance = auto_tolerance(lab, bg_colors, args.border_frac,
+                                   args.lightness_weight, args.sat_weight)
+        print(f"auto tolerance = {tolerance:.1f}")
+    else:
+        tolerance = float(args.tolerance)
+
+    dist = color_distance(lab, bg_colors, args.lightness_weight,
+                          args.sat_weight)
+    mask = build_mask(dist, tolerance)
     mask = clean_mask(mask, args.open_size, args.close_size,
                       args.min_area, fill_holes=not args.keep_holes)
     if mask.max() == 0:
@@ -488,7 +571,7 @@ def main():
     if args.predict:
         dbg = img.copy() if args.debug else None
         mask, bridged = predict_borders(
-            mask, dist, args.tolerance, conf_ratio=args.conf_ratio,
+            mask, dist, tolerance, conf_ratio=args.conf_ratio,
             max_gap_frac=args.max_gap_frac, min_gap_px=args.min_gap,
             anchor_pts=args.anchor_pts, sample_depth=args.sample_depth,
             debug_img=dbg)
@@ -496,7 +579,7 @@ def main():
         if dbg is not None:
             cv2.imwrite(f"{stem}_borders.png", dbg)
 
-    alpha = make_alpha(mask, dist, args.tolerance, soft=args.soft,
+    alpha = make_alpha(mask, dist, tolerance, soft=args.soft,
                        soft_band=args.soft_band, feather=args.feather)
 
     rgba = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
@@ -507,9 +590,18 @@ def main():
 
     if args.debug:
         cv2.imwrite(f"{stem}_mask.png", mask)
-        d = np.clip(dist / max(args.tolerance * 2, 1e-6) * 255, 0, 255)
+        d = np.clip(dist / max(tolerance * 2, 1e-6) * 255, 0, 255)
         cv2.imwrite(f"{stem}_dist.png", d.astype(np.uint8))
-        print(f"debug images: {stem}_mask.png, {stem}_dist.png"
+        # cutout composited over a checkerboard — easiest way to eyeball it
+        h, w = mask.shape
+        yy, xx = np.mgrid[0:h, 0:w]
+        checker = np.where(((xx // 16 + yy // 16) % 2) == 0, 200, 150)
+        checker = np.repeat(checker[..., None], 3, axis=2).astype(np.float32)
+        a = alpha[..., None]
+        comp = (img.astype(np.float32) * a + checker * (1 - a))
+        cv2.imwrite(f"{stem}_preview.png", comp.astype(np.uint8))
+        print(f"debug images: {stem}_mask.png, {stem}_dist.png, "
+              f"{stem}_preview.png"
               + (f", {stem}_borders.png" if args.predict else ""))
 
 

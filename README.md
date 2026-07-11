@@ -48,11 +48,17 @@ refresh the stored token.
 
 A standalone command-line tool that cuts objects out of a photo with a
 predominantly uniform background and writes a transparent PNG. Unlike the
-rest of the app it needs two packages:
+rest of the app it needs two packages (plus two optional ones for
+iPhone HEIC/HEIF photos):
 
 ```bash
 pip install opencv-python numpy
+pip install pillow pillow-heif   # optional: HEIC/HEIF input support
 ```
+
+Input can be anything OpenCV reads (JPEG, PNG, TIFF, ...) and, with the
+optional packages, HEIC/HEIF straight off an iPhone. Output is always
+PNG, since it needs an alpha channel.
 
 Quick start (generates a synthetic test image so you can try it
 immediately):
@@ -72,15 +78,25 @@ morphology, small-blob removal and hole filling.
 Most useful knobs (see `--help` for all of them):
 
 - `--tolerance N` — the big one. Lower keeps more (soft shadows become
-  object), higher keeps less. Default 28.
-- `--bg-color R,G,B` — skip auto-detection when you know the backdrop.
-- `--lightness-weight 0.5` — tolerate shadows/uneven lighting by caring
-  less about brightness and more about hue.
+  object), higher keeps less. Default 28. `--tolerance auto` derives a
+  starting value from the border pixels themselves; treat it as a first
+  guess and nudge from there.
+- `--bg-colors N` — model the background as up to N colors instead of 1.
+  Use 2–4 when the backdrop has a gradient, vignette, or uneven
+  lighting, so the whole *range* of background shades is matched.
+- `--bg-color "R,G,B"` — skip auto-detection when you know the backdrop;
+  give several separated by `;` to specify the range manually.
+- `--lightness-weight` / `--sat-weight` — reweight what "different from
+  the background" means. Lower `--lightness-weight` (e.g. 0.5) to
+  ignore shadows and uneven lighting; raise `--sat-weight` (e.g. 2)
+  when the object differs from the backdrop mainly in saturation/hue
+  rather than brightness. The two combine well for subtle objects.
 - `--soft N` / `--feather N` — soft color ramp at the edge / Gaussian
   edge feathering instead of a hard cut.
 - `--min-area`, `--open`, `--close`, `--keep-holes` — mask cleanup.
-- `--debug` — dumps the mask, the color-distance map, and (with
-  `--predict`) an overlay showing what the border predictor did.
+- `--debug` — dumps the mask, the color-distance map, a preview of the
+  cutout over a checkerboard, and (with `--predict`) an overlay showing
+  what the border predictor did.
 
 ### Border prediction (`--predict`)
 
