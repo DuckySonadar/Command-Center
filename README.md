@@ -91,12 +91,75 @@ Most useful knobs (see `--help` for all of them):
   ignore shadows and uneven lighting; raise `--sat-weight` (e.g. 2)
   when the object differs from the backdrop mainly in saturation/hue
   rather than brightness. The two combine well for subtle objects.
+- `--bg-from WHERE` — where the background is sampled: `border`
+  (default), `image` (dominant color of the whole frame), or a point
+  like `0.5,0.9` (fractional x,y of a clean patch of backdrop). Use the
+  latter two when things other than backdrop touch the frame edges.
+- `--roi FX,FY,FW,FH` — only look for objects inside this fractional
+  rectangle; everything outside becomes transparent. The practical fix
+  for desk clutter, or reflections in the corners of a glossy table.
+- `--keep-largest N` — keep only the N biggest objects found.
+- `--grabcut 3` — refine the color mask with OpenCV's GrabCut (color
+  mixture models + spatial smoothness). Great at snapping off attached
+  shadows and reflections that share a tint with the object.
 - `--soft N` / `--feather N` — soft color ramp at the edge / Gaussian
   edge feathering instead of a hard cut.
 - `--min-area`, `--open`, `--close`, `--keep-holes` — mask cleanup.
 - `--debug` — dumps the mask, the color-distance map, a preview of the
   cutout over a checkerboard, and (with `--predict`) an overlay showing
   what the border predictor did.
+
+### AI engine (`--ai`)
+
+For photos that defeat color logic entirely — e.g. a blue-gray object on
+a mat whose glare reflects the same blue — there's a neural option:
+
+```bash
+pip install rembg onnxruntime   # once; first run downloads ~170 MB
+python3 bg_remove.py IMG_2140.HEIC out.png --ai --keep-largest 1
+```
+
+It runs fully locally (U^2-Net via rembg). `--roi`, `--min-area`,
+`--keep-largest`, `--keep-holes` and `--feather` still apply; the color
+options don't.
+
+### Recipes from the test photos
+
+Worked starting points, tuned on the photos in this repo:
+
+```bash
+# single toy on a dark table, attached shadow (IMG_2128)
+python3 bg_remove.py IMG_2128.HEIC out.png --bg-colors 3 --tolerance auto \
+  --lightness-weight 0.4 --sat-weight 2 --min-area 5000 --keep-largest 1 \
+  --grabcut 3 --feather 2
+
+# several colorful toys on a glossy black table, reflections in the
+# corners (IMG_2154): fence the toys in with --roi
+python3 bg_remove.py IMG_2154.jpg out.png --bg-colors 3 --tolerance 20 \
+  --lightness-weight 0.5 --roi 0.13,0.1,0.65,0.78 --min-area 5000 \
+  --keep-largest 5 --feather 2
+
+# same table, toy reflections attached below (IMG_2155): GrabCut snaps
+# the reflections off
+python3 bg_remove.py IMG_2155.jpg out.png --bg-colors 3 --tolerance 26 \
+  --lightness-weight 0.6 --sat-weight 1.2 --roi 0.05,0.12,0.92,0.72 \
+  --min-area 5000 --keep-largest 4 --grabcut 3 --feather 2
+
+# glow-in-the-dark toys, dim room (IMG_2161): bright objects, dark bg,
+# so tolerance can be generous
+python3 bg_remove.py IMG_2161.jpeg out.png --bg-colors 3 --tolerance 40 \
+  --min-area 5000 --keep-largest 2 --feather 2
+
+# toy on a leather mat whose glare reflects the toy's own blue
+# (IMG_2140, IMG_2142): color logic can't separate — use the AI engine
+python3 bg_remove.py IMG_2140.HEIC out.png --ai --keep-largest 1 --feather 2
+```
+
+General tuning order: get the background model right first (`--bg-from`,
+`--bg-colors`), then set `--tolerance` (start with `auto`, check the
+`--debug` preview), then clean up (`--roi`, `--keep-largest`,
+`--min-area`), and reach for `--grabcut` when shadows or reflections
+stay attached to the object.
 
 ### Border prediction (`--predict`)
 

@@ -69,29 +69,55 @@ def to_lab(bgr):
     return cv2.cvtColor(bgr, cv2.COLOR_BGR2LAB).astype(np.float32)
 
 
-def _border_samples(lab, border_frac):
-    h, w = lab.shape[:2]
-    b = max(2, int(round(border_frac * min(h, w))))
-    strips = [lab[:b, :], lab[-b:, :], lab[:, :b], lab[:, -b:]]
-    samples = np.concatenate([s.reshape(-1, 3) for s in strips]).astype(np.float32)
-    if len(samples) > 8000:  # k-means doesn't need every pixel
-        idx = np.random.default_rng(0).choice(len(samples), 8000, replace=False)
+def _subsample(samples, cap):
+    if len(samples) > cap:  # k-means doesn't need every pixel
+        idx = np.random.default_rng(0).choice(len(samples), cap, replace=False)
         samples = samples[idx]
     return samples
 
 
-def estimate_bg_colors(lab, border_frac=0.04, max_colors=1, min_share=0.08):
-    """Dominant Lab color(s) of the image border.
+def bg_samples(lab, bg_from="border", border_frac=0.04):
+    """Pixels believed to be background, per the --bg-from strategy.
 
-    Samples a frame of `border_frac` * min(h, w) pixels around the edge
-    and k-means it. With max_colors=1 you get the single biggest
-    cluster; higher values also keep secondary clusters that cover at
-    least `min_share` of the border — useful when the backdrop has a
-    visible gradient, vignette, or two-toned lighting, so the
-    "background" is really a range of colors. K-means (rather than a
-    plain mean) keeps an object touching the edge from skewing things.
+    border  -- a frame around the image edge (default; assumes nothing
+               but backdrop touches the frame)
+    image   -- the whole image, subsampled (assumes the backdrop is the
+               dominant color overall — survives clutter at the edges)
+    "fx,fy" -- a patch around that point, in 0-1 fractional coordinates
+               (point at a clean piece of backdrop when both assumptions
+               fail, e.g. "0.5,0.9" = bottom middle)
     """
-    samples = _border_samples(lab, border_frac)
+    h, w = lab.shape[:2]
+    if bg_from == "border":
+        b = max(2, int(round(border_frac * min(h, w))))
+        strips = [lab[:b, :], lab[-b:, :], lab[:, :b], lab[:, -b:]]
+        samples = np.concatenate([s.reshape(-1, 3) for s in strips])
+    elif bg_from == "image":
+        samples = lab.reshape(-1, 3)
+    else:
+        try:
+            fx, fy = (float(v) for v in bg_from.split(","))
+        except ValueError:
+            sys.exit(f"error: --bg-from must be 'border', 'image', or "
+                     f"'fx,fy' fractional coordinates, not {bg_from!r}")
+        r = max(4, int(round(0.03 * min(h, w))))
+        cx, cy = int(fx * (w - 1)), int(fy * (h - 1))
+        x0, x1 = max(0, cx - r), min(w, cx + r)
+        y0, y1 = max(0, cy - r), min(h, cy + r)
+        samples = lab[y0:y1, x0:x1].reshape(-1, 3)
+    return _subsample(samples.astype(np.float32), 20000)
+
+
+def estimate_bg_colors(samples, max_colors=1, min_share=0.08):
+    """Dominant Lab color(s) of the background sample set.
+
+    With max_colors=1 you get the single biggest k-means cluster; higher
+    values also keep secondary clusters that cover at least `min_share`
+    of the samples — useful when the backdrop has a visible gradient,
+    vignette, or two-toned lighting, so the "background" is really a
+    range of colors. K-means (rather than a plain mean) keeps an object
+    or clutter in the sample region from skewing the estimate.
+    """
     k = max(3, max_colors)
     criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 0.5)
     _, labels, centers = cv2.kmeans(samples, k, None, criteria, 3,
@@ -125,15 +151,19 @@ def color_distance(lab, bg_colors, lightness_weight=1.0, sat_weight=1.0):
     return dist
 
 
-def auto_tolerance(lab, bg_colors, border_frac, lightness_weight, sat_weight,
-                   percentile=99.0, margin=1.35, floor=10.0):
-    """Pick a tolerance from the border itself: how far do genuine
-    background pixels stray from the background model? The returned
-    threshold sits `margin` above the `percentile`-th of those
-    distances, so backdrop texture/noise stays background."""
-    samples = _border_samples(lab, border_frac).reshape(1, -1, 3)
-    d = color_distance(samples, bg_colors, lightness_weight, sat_weight)
-    return max(float(np.percentile(d, percentile)) * margin, floor)
+def auto_tolerance(samples, bg_colors, lightness_weight, sat_weight,
+                   trim=0.75, margin=1.5, floor=10.0):
+    """Pick a tolerance from the background samples themselves: how far
+    do genuine background pixels stray from the background model?
+
+    Only the closest `trim` fraction of samples is considered, so
+    clutter that slipped into the sample region (a keyboard at the edge
+    of frame, glare) inflates neither the estimate nor your patience.
+    The threshold sits `margin` above that trimmed tail."""
+    d = color_distance(samples.reshape(1, -1, 3), bg_colors,
+                       lightness_weight, sat_weight).ravel()
+    kept = np.sort(d)[:max(1, int(len(d) * trim))]
+    return max(float(np.percentile(kept, 99.0)) * margin, floor)
 
 
 # --------------------------------------------------------------------------
@@ -144,7 +174,8 @@ def build_mask(dist, tolerance):
     return (dist > tolerance).astype(np.uint8) * 255
 
 
-def clean_mask(mask, open_size=3, close_size=5, min_area=400, fill_holes=True):
+def clean_mask(mask, open_size=3, close_size=5, min_area=400, fill_holes=True,
+               keep_largest=0):
     if open_size > 0:
         k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (open_size, open_size))
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k)
@@ -152,11 +183,16 @@ def clean_mask(mask, open_size=3, close_size=5, min_area=400, fill_holes=True):
         k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_size, close_size))
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
 
-    if min_area > 0:
+    if min_area > 0 or keep_largest > 0:
         n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+        areas = stats[1:, cv2.CC_STAT_AREA]
+        allowed = set(range(1, n))
+        if keep_largest > 0:  # e.g. 1 object photographed on a busy desk
+            biggest = np.argsort(areas)[::-1][:keep_largest] + 1
+            allowed &= set(int(i) for i in biggest)
         keep = np.zeros_like(mask)
-        for i in range(1, n):
-            if stats[i, cv2.CC_STAT_AREA] >= min_area:
+        for i in allowed:
+            if areas[i - 1] >= min_area:
                 keep[labels == i] = 255
         mask = keep
 
@@ -167,6 +203,63 @@ def clean_mask(mask, open_size=3, close_size=5, min_area=400, fill_holes=True):
         cv2.drawContours(mask, contours, -1, 255, cv2.FILLED)
 
     return mask
+
+
+def ai_alpha(img):
+    """Alpha matte from the rembg neural model (U^2-Net), 0..1 float.
+
+    Optional heavyweight path: `pip install rembg onnxruntime`. The
+    first run downloads the model (~170 MB) to ~/.u2net. Use when the
+    photo defeats color logic — e.g. glare on a glossy surface that
+    shares the object's color. Runs fully locally."""
+    try:
+        from rembg import remove, new_session
+    except ImportError:
+        sys.exit("error: --ai needs the rembg package: "
+                 "pip install rembg onnxruntime")
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    out = np.asarray(remove(rgb, session=new_session("u2net")))
+    return out[..., 3].astype(np.float32) / 255.0
+
+
+def grabcut_refine(img, mask, iters=3, max_dim=1400):
+    """Refine a color-threshold mask with OpenCV's GrabCut.
+
+    The threshold mask seeds GrabCut's labels: strongly-inside pixels
+    become sure-foreground, the rest of the mask probable-foreground, a
+    band around it probable-background, and everything far away
+    sure-background. GrabCut then fits Gaussian mixture color models to
+    each side and solves a graph cut, which recovers objects that share
+    *some* colors with the backdrop (glare, sheen) because it also
+    weighs spatial coherence. Runs on a downscaled copy for speed; the
+    result is upscaled back.
+    """
+    h, w = mask.shape
+    scale = min(1.0, max_dim / max(h, w))
+    if scale < 1.0:
+        small = cv2.resize(img, None, fx=scale, fy=scale,
+                           interpolation=cv2.INTER_AREA)
+        msmall = cv2.resize(mask, (small.shape[1], small.shape[0]),
+                            interpolation=cv2.INTER_NEAREST)
+    else:
+        small, msmall = img, mask
+
+    def kernel(frac):
+        k = max(3, int(frac * min(msmall.shape)) | 1)
+        return cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+
+    gc = np.full(msmall.shape, cv2.GC_PR_BGD, np.uint8)
+    gc[cv2.dilate(msmall, kernel(0.10)) == 0] = cv2.GC_BGD
+    gc[msmall > 0] = cv2.GC_PR_FGD
+    gc[cv2.erode(msmall, kernel(0.02)) > 0] = cv2.GC_FGD
+
+    bgd, fgd = np.zeros((1, 65), np.float64), np.zeros((1, 65), np.float64)
+    cv2.grabCut(small, gc, None, bgd, fgd, iters, cv2.GC_INIT_WITH_MASK)
+    out = np.where((gc == cv2.GC_FGD) | (gc == cv2.GC_PR_FGD), 255, 0)
+    out = out.astype(np.uint8)
+    if scale < 1.0:
+        out = cv2.resize(out, (w, h), interpolation=cv2.INTER_NEAREST)
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -465,6 +558,12 @@ def main():
                    help="model the background with up to N auto-estimated "
                         "colors instead of 1 — use 2-4 for backdrops with "
                         "gradients or uneven lighting (default 1)")
+    g.add_argument("--bg-from", default="border", metavar="WHERE",
+                   help="where to sample the background from: 'border' "
+                        "(default), 'image' (dominant color of the whole "
+                        "frame — use when clutter touches the edges), or "
+                        "'fx,fy' fractional coordinates of a clean backdrop "
+                        "spot, e.g. '0.5,0.9'")
     g.add_argument("--border-frac", type=float, default=0.04,
                    help="border width sampled for bg estimation, as a "
                         "fraction of image size (default 0.04)")
@@ -487,6 +586,22 @@ def main():
     g.add_argument("--keep-holes", action="store_true",
                    help="keep background-colored holes inside objects "
                         "transparent (default: holes are filled)")
+    g.add_argument("--keep-largest", type=int, default=0, metavar="N",
+                   help="keep only the N largest objects — drops desk "
+                        "clutter that isn't background-colored (default 0 "
+                        "= keep everything above --min-area)")
+    g.add_argument("--grabcut", type=int, default=0, metavar="ITERS",
+                   help="refine the mask with GrabCut for this many "
+                        "iterations (try 3). Fits color-mixture models to "
+                        "object and backdrop with spatial smoothness — "
+                        "rescues shots where glare or sheen shares colors "
+                        "with the object, at the cost of a few seconds")
+    g.add_argument("--roi", metavar="FX,FY,FW,FH",
+                   help="only look for objects inside this rectangle "
+                        "(fractional: x,y,width,height, e.g. "
+                        "'0.1,0.2,0.8,0.7'); everything outside becomes "
+                        "transparent. Use when the frame edge has clutter "
+                        "that isn't backdrop (desk, laptop, other items)")
 
     g = ap.add_argument_group("border prediction (tangent extrapolation)")
     g.add_argument("--predict", action="store_true",
@@ -507,6 +622,16 @@ def main():
     g.add_argument("--sample-depth", type=int, default=4,
                    help="px stepped inside the edge when scoring "
                         "distinctness (default 4)")
+
+    g = ap.add_argument_group("AI engine")
+    g.add_argument("--ai", action="store_true",
+                   help="segment with the rembg neural model (U^2-Net) "
+                        "instead of color logic. Needs 'pip install rembg "
+                        "onnxruntime'; first run downloads ~170 MB of model "
+                        "weights. For photos color logic can't handle: "
+                        "glare or reflections sharing the object's color. "
+                        "--roi/--min-area/--keep-largest/--keep-holes/"
+                        "--feather still apply; color options don't")
 
     g = ap.add_argument_group("edges & output")
     g.add_argument("--soft", type=float, default=0.0,
@@ -535,6 +660,84 @@ def main():
     out_path = args.output or os.path.splitext(args.input)[0] + "_cutout.png"
     stem = os.path.splitext(out_path)[0]
 
+    full_img, roi_box = img, None
+    if args.roi:
+        try:
+            fx, fy, fw, fh = (float(v) for v in args.roi.split(","))
+        except ValueError:
+            sys.exit(f"error: --roi must be 'fx,fy,fw,fh', not {args.roi!r}")
+        H, W = img.shape[:2]
+        x0, y0 = max(0, int(fx * W)), max(0, int(fy * H))
+        x1, y1 = min(W, int((fx + fw) * W)), min(H, int((fy + fh) * H))
+        if x1 - x0 < 8 or y1 - y0 < 8:
+            sys.exit("error: --roi rectangle is empty or out of frame")
+        roi_box = (x0, y0, x1, y1)
+        img = img[y0:y1, x0:x1]
+
+    if args.ai:
+        alpha, dist, tolerance = run_ai(img, args)
+        mask = (alpha >= 0.5).astype(np.uint8) * 255
+        if args.predict:
+            print("note: --predict applies to the color pipeline; "
+                  "ignored with --ai")
+    else:
+        alpha, mask, dist, tolerance = run_color(img, args, stem)
+
+    if roi_box is not None:  # place the ROI's alpha back into the full frame
+        x0, y0, x1, y1 = roi_box
+        full_alpha = np.zeros(full_img.shape[:2], np.float32)
+        full_alpha[y0:y1, x0:x1] = alpha
+        img, alpha = full_img, full_alpha
+
+    rgba = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
+    rgba[..., 3] = (alpha * 255).round().astype(np.uint8)
+    cv2.imwrite(out_path, rgba)
+    kept = (alpha > 0.5).mean() * 100
+    print(f"wrote {out_path}  ({kept:.1f}% of pixels kept)")
+
+    if args.debug:
+        cv2.imwrite(f"{stem}_mask.png", mask)
+        extra = ""
+        if dist is not None:
+            d = np.clip(dist / max(tolerance * 2, 1e-6) * 255, 0, 255)
+            cv2.imwrite(f"{stem}_dist.png", d.astype(np.uint8))
+            extra = f", {stem}_dist.png"
+        # cutout composited over a checkerboard — easiest way to eyeball it
+        h, w = alpha.shape
+        yy, xx = np.mgrid[0:h, 0:w]
+        checker = np.where(((xx // 16 + yy // 16) % 2) == 0, 200, 150)
+        checker = np.repeat(checker[..., None], 3, axis=2).astype(np.float32)
+        a = alpha[..., None]
+        comp = (img.astype(np.float32) * a + checker * (1 - a))
+        cv2.imwrite(f"{stem}_preview.png", comp.astype(np.uint8))
+        print(f"debug images: {stem}_mask.png{extra}, {stem}_preview.png"
+              + (f", {stem}_borders.png"
+                 if args.predict and not args.ai else ""))
+
+
+def run_ai(img, args):
+    """Mask via the rembg neural model; returns (alpha, dist, tolerance)."""
+    raw = ai_alpha(img)
+    mask = (raw >= 0.5).astype(np.uint8) * 255
+    mask = clean_mask(mask, 0, 0, args.min_area,
+                      fill_holes=not args.keep_holes,
+                      keep_largest=args.keep_largest)
+    if mask.max() == 0:
+        sys.exit("error: the AI model found no object (or it was smaller "
+                 "than --min-area)")
+    alpha = raw.copy()
+    near = cv2.dilate(mask, np.ones((11, 11), np.uint8))
+    alpha[near == 0] = 0.0          # drop discarded components' mattes
+    if not args.keep_holes:
+        alpha[(mask > 0) & (raw < 0.5)] = 1.0   # holes clean_mask filled
+    if args.feather > 0:
+        alpha = cv2.GaussianBlur(alpha, (0, 0), args.feather)
+    return np.clip(alpha, 0.0, 1.0), None, None
+
+
+def run_color(img, args, stem):
+    """The classic color-distance pipeline; returns (alpha, mask, dist,
+    tolerance)."""
     lab = to_lab(img)
     if args.bg_color:
         bg_colors = []
@@ -542,9 +745,10 @@ def main():
             r, g_, b = (int(v) for v in spec.split(","))
             bg_colors.append(to_lab(np.array([[[b, g_, r]]], np.uint8))[0, 0])
         bg_colors = np.array(bg_colors, np.float32)
+        samples = bg_samples(lab, args.bg_from, args.border_frac)
     else:
-        bg_colors = estimate_bg_colors(lab, args.border_frac,
-                                       max_colors=args.bg_colors)
+        samples = bg_samples(lab, args.bg_from, args.border_frac)
+        bg_colors = estimate_bg_colors(samples, max_colors=args.bg_colors)
     shown = []
     for c in bg_colors:
         bgr = cv2.cvtColor(c.reshape(1, 1, 3).astype(np.uint8),
@@ -553,7 +757,7 @@ def main():
     print("background color ≈ " + ", ".join(shown))
 
     if str(args.tolerance).lower() == "auto":
-        tolerance = auto_tolerance(lab, bg_colors, args.border_frac,
+        tolerance = auto_tolerance(samples, bg_colors,
                                    args.lightness_weight, args.sat_weight)
         print(f"auto tolerance = {tolerance:.1f}")
     else:
@@ -563,10 +767,20 @@ def main():
                           args.sat_weight)
     mask = build_mask(dist, tolerance)
     mask = clean_mask(mask, args.open_size, args.close_size,
-                      args.min_area, fill_holes=not args.keep_holes)
+                      args.min_area, fill_holes=not args.keep_holes,
+                      keep_largest=args.keep_largest)
     if mask.max() == 0:
         sys.exit("error: nothing left after thresholding — try lowering "
                  "--tolerance or checking --bg-color")
+
+    if args.grabcut > 0:
+        mask = grabcut_refine(img, mask, iters=args.grabcut)
+        mask = clean_mask(mask, 0, 0, args.min_area,
+                          fill_holes=not args.keep_holes,
+                          keep_largest=args.keep_largest)
+        if mask.max() == 0:
+            sys.exit("error: GrabCut removed everything — try more "
+                     "tolerance headroom or skip --grabcut")
 
     if args.predict:
         dbg = img.copy() if args.debug else None
@@ -581,28 +795,7 @@ def main():
 
     alpha = make_alpha(mask, dist, tolerance, soft=args.soft,
                        soft_band=args.soft_band, feather=args.feather)
-
-    rgba = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
-    rgba[..., 3] = (alpha * 255).round().astype(np.uint8)
-    cv2.imwrite(out_path, rgba)
-    kept = (alpha > 0.5).mean() * 100
-    print(f"wrote {out_path}  ({kept:.1f}% of pixels kept)")
-
-    if args.debug:
-        cv2.imwrite(f"{stem}_mask.png", mask)
-        d = np.clip(dist / max(tolerance * 2, 1e-6) * 255, 0, 255)
-        cv2.imwrite(f"{stem}_dist.png", d.astype(np.uint8))
-        # cutout composited over a checkerboard — easiest way to eyeball it
-        h, w = mask.shape
-        yy, xx = np.mgrid[0:h, 0:w]
-        checker = np.where(((xx // 16 + yy // 16) % 2) == 0, 200, 150)
-        checker = np.repeat(checker[..., None], 3, axis=2).astype(np.float32)
-        a = alpha[..., None]
-        comp = (img.astype(np.float32) * a + checker * (1 - a))
-        cv2.imwrite(f"{stem}_preview.png", comp.astype(np.uint8))
-        print(f"debug images: {stem}_mask.png, {stem}_dist.png, "
-              f"{stem}_preview.png"
-              + (f", {stem}_borders.png" if args.predict else ""))
+    return alpha, mask, dist, tolerance
 
 
 if __name__ == "__main__":
