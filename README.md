@@ -102,8 +102,15 @@ Most useful knobs (see `--help` for all of them):
 - `--grabcut 3` — refine the color mask with OpenCV's GrabCut (color
   mixture models + spatial smoothness). Great at snapping off attached
   shadows and reflections that share a tint with the object.
+- `--shrink N` — pull the cut line inward by N pixels (a compositor's
+  "choke"). *This*, not soft/feather, is the fix when a rim of leftover
+  background hugs the object. Start with 5–15 on 12 MP photos; negative
+  values expand instead.
 - `--soft N` / `--feather N` — soft color ramp at the edge / Gaussian
-  edge feathering instead of a hard cut.
+  edge feathering instead of a hard cut. These change how *gradual* the
+  existing cut line is; they don't move it. `--soft` is in Lab color
+  units (5–15 is sensible); `--feather` is a blur radius in pixels
+  (2–4 is subtle on a 12 MP photo, 8+ clearly soft).
 - `--min-area`, `--open`, `--close`, `--keep-holes` — mask cleanup.
 - `--debug` — dumps the mask, the color-distance map, a preview of the
   cutout over a checkerboard, and (with `--predict`) an overlay showing
@@ -124,8 +131,13 @@ the tool ships its own tiny model runner. If the `rembg` package happens
 to be installed it is used instead, but it's *not* required (rembg pulls
 in numba/llvmlite, which don't have prebuilt wheels on every
 Python/macOS combination and then demand cmake + LLVM to compile).
-`--roi`, `--min-area`, `--keep-largest`, `--keep-holes` and `--feather`
-still apply with `--ai`; the color options don't.
+`--roi`, `--min-area`, `--keep-largest`, `--keep-holes`, `--shrink` and
+`--feather` still apply with `--ai`; the color options don't.
+
+U^2-Net works on a 320x320 grid internally, so on a 12 MP photo its edge
+is naturally a wide soft band. To tighten a halo: raise
+`--ai-threshold` (0.5 default → try 0.7), add `--shrink 8-15`, and
+finish with a small `--feather 2-3`.
 
 ### Recipes from the test photos
 
