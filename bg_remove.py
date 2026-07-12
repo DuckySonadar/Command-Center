@@ -227,6 +227,52 @@ def ai_alpha(img):
     return out[..., 3].astype(np.float32) / 255.0
 
 
+def _download(url, dest):
+    """Fetch url to dest with a progress line. Uses certifi's CA bundle
+    when available — python.org installs on macOS ship without CA
+    certificates wired up, and the fix is friendlier than a traceback."""
+    import ssl
+    import urllib.error
+    import urllib.request
+
+    def fetch(ctx):
+        with urllib.request.urlopen(url, context=ctx) as r, \
+                open(dest, "wb") as f:
+            total = int(r.headers.get("Content-Length") or 0)
+            done = 0
+            while True:
+                chunk = r.read(1 << 20)
+                if not chunk:
+                    break
+                f.write(chunk)
+                done += len(chunk)
+                if total:
+                    print(f"\r  {done / 1e6:.0f}/{total / 1e6:.0f} MB",
+                          end="", flush=True)
+            print()
+
+    contexts = [None]  # the system trust store is usually right; try first
+    try:
+        import certifi
+        contexts.append(ssl.create_default_context(cafile=certifi.where()))
+    except ImportError:
+        pass
+    for ctx in contexts:
+        try:
+            fetch(ctx)
+            return
+        except urllib.error.URLError as e:
+            if "CERTIFICATE_VERIFY_FAILED" not in str(e):
+                raise
+    sys.exit(
+        "error: your Python can't verify HTTPS certificates, so the "
+        "model download failed.\nOn macOS (python.org installs) run "
+        "the bundled fixer once:\n"
+        '    open "/Applications/Python 3.13/Install Certificates.command"\n'
+        "(adjust the version to yours), or: pip3 install certifi\n"
+        "Then re-run this command.")
+
+
 def _u2net_model_path():
     home = os.path.expanduser(
         os.getenv("U2NET_HOME",
@@ -235,9 +281,8 @@ def _u2net_model_path():
     if not os.path.exists(path):
         os.makedirs(home, exist_ok=True)
         print(f"downloading U^2-Net model (~170 MB) to {path} ...")
-        import urllib.request
         tmp = path + ".part"
-        urllib.request.urlretrieve(U2NET_URL, tmp)
+        _download(U2NET_URL, tmp)
         import hashlib
         md5 = hashlib.md5()
         with open(tmp, "rb") as f:
