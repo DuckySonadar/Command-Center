@@ -320,6 +320,17 @@ def _u2net_alpha(img):
     return np.clip(alpha, 0.0, 1.0)
 
 
+def shrink_mask(mask, px):
+    """Pull the mask edge inward by px pixels (a compositor's 'choke');
+    negative px pushes it outward. This, not blur, is the cure for a
+    halo of leftover background hugging the cut line."""
+    if px == 0:
+        return mask
+    r = int(round(abs(px)))
+    kern = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+    return cv2.erode(mask, kern) if px > 0 else cv2.dilate(mask, kern)
+
+
 def grabcut_refine(img, mask, iters=3, max_dim=1400):
     """Refine a color-threshold mask with OpenCV's GrabCut.
 
@@ -722,6 +733,10 @@ def main():
                         "distinctness (default 4)")
 
     g = ap.add_argument_group("AI engine")
+    g.add_argument("--ai-threshold", type=float, default=0.5,
+                   help="matte level treated as object with --ai, 0-1 "
+                        "(default 0.5). Raise toward 0.7-0.8 to tighten a "
+                        "halo the model leaves around the object")
     g.add_argument("--ai", action="store_true",
                    help="segment with the rembg neural model (U^2-Net) "
                         "instead of color logic. Needs 'pip install rembg "
@@ -732,6 +747,11 @@ def main():
                         "--feather still apply; color options don't")
 
     g = ap.add_argument_group("edges & output")
+    g.add_argument("--shrink", type=float, default=0.0, metavar="PX",
+                   help="pull the cut line inward by this many pixels "
+                        "(a 'choke') — the fix for a leftover halo of "
+                        "background around the object. Negative expands. "
+                        "Works with both engines; try 5-15 on 12 MP photos")
     g.add_argument("--soft", type=float, default=0.0,
                    help="soft color ramp half-width in Lab units around the "
                         "tolerance (0 = hard edge)")
@@ -814,22 +834,32 @@ def main():
 
 
 def run_ai(img, args):
-    """Mask via the rembg neural model; returns (alpha, dist, tolerance)."""
+    """Mask via the U^2-Net model; returns (alpha, dist, tolerance)."""
     raw = ai_alpha(img)
-    mask = (raw >= 0.5).astype(np.uint8) * 255
+    thresh = args.ai_threshold
+    mask = (raw >= thresh).astype(np.uint8) * 255
     mask = clean_mask(mask, 0, 0, args.min_area,
                       fill_holes=not args.keep_holes,
                       keep_largest=args.keep_largest)
     if mask.max() == 0:
         sys.exit("error: the AI model found no object (or it was smaller "
                  "than --min-area)")
+    if args.shrink:
+        mask = shrink_mask(mask, args.shrink)
+        if mask.max() == 0:
+            sys.exit("error: --shrink removed everything — use a smaller "
+                     "value")
     alpha = raw.copy()
-    near = cv2.dilate(mask, np.ones((11, 11), np.uint8))
-    alpha[near == 0] = 0.0          # drop discarded components' mattes
+    if args.shrink > 0:             # choked: cut hard at the new edge
+        alpha[mask == 0] = 0.0
+    else:                           # keep the model's soft fringe nearby
+        near = cv2.dilate(mask, np.ones((11, 11), np.uint8))
+        alpha[near == 0] = 0.0      # drop discarded components' mattes
     if not args.keep_holes:
-        alpha[(mask > 0) & (raw < 0.5)] = 1.0   # holes clean_mask filled
+        alpha[(mask > 0) & (raw < thresh)] = 1.0  # holes clean_mask filled
     if args.feather > 0:
         alpha = cv2.GaussianBlur(alpha, (0, 0), args.feather)
+        alpha *= cv2.dilate(mask, np.ones((3, 3), np.uint8)) > 0
     return np.clip(alpha, 0.0, 1.0), None, None
 
 
@@ -890,6 +920,12 @@ def run_color(img, args, stem):
         print(f"border prediction: {bridged} indistinct gap(s) bridged")
         if dbg is not None:
             cv2.imwrite(f"{stem}_borders.png", dbg)
+
+    if args.shrink:
+        mask = shrink_mask(mask, args.shrink)
+        if mask.max() == 0:
+            sys.exit("error: --shrink removed everything — use a smaller "
+                     "value")
 
     alpha = make_alpha(mask, dist, tolerance, soft=args.soft,
                        soft_band=args.soft_band, feather=args.feather)
