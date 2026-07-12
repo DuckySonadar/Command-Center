@@ -205,21 +205,74 @@ def clean_mask(mask, open_size=3, close_size=5, min_area=400, fill_holes=True,
     return mask
 
 
-def ai_alpha(img):
-    """Alpha matte from the rembg neural model (U^2-Net), 0..1 float.
+U2NET_URL = "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2net.onnx"
+U2NET_MD5 = "60024c5c889badc19c04ad937298a77b"
 
-    Optional heavyweight path: `pip install rembg onnxruntime`. The
-    first run downloads the model (~170 MB) to ~/.u2net. Use when the
-    photo defeats color logic — e.g. glare on a glossy surface that
-    shares the object's color. Runs fully locally."""
+
+def ai_alpha(img):
+    """Alpha matte from the U^2-Net neural model, 0..1 float.
+
+    Uses the rembg package when installed; otherwise falls back to a
+    built-in runner that only needs `pip install onnxruntime` (rembg
+    drags in numba/llvmlite, which don't build everywhere). Either way
+    the first run downloads the model (~170 MB) to ~/.u2net and
+    everything runs locally. Use when the photo defeats color logic —
+    e.g. glare on a glossy surface that shares the object's color."""
     try:
         from rembg import remove, new_session
     except ImportError:
-        sys.exit("error: --ai needs the rembg package: "
-                 "pip install rembg onnxruntime")
+        return _u2net_alpha(img)
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     out = np.asarray(remove(rgb, session=new_session("u2net")))
     return out[..., 3].astype(np.float32) / 255.0
+
+
+def _u2net_model_path():
+    home = os.path.expanduser(
+        os.getenv("U2NET_HOME",
+                  os.path.join(os.getenv("XDG_DATA_HOME", "~"), ".u2net")))
+    path = os.path.join(home, "u2net.onnx")
+    if not os.path.exists(path):
+        os.makedirs(home, exist_ok=True)
+        print(f"downloading U^2-Net model (~170 MB) to {path} ...")
+        import urllib.request
+        tmp = path + ".part"
+        urllib.request.urlretrieve(U2NET_URL, tmp)
+        import hashlib
+        md5 = hashlib.md5()
+        with open(tmp, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                md5.update(chunk)
+        if md5.hexdigest() != U2NET_MD5:
+            os.remove(tmp)
+            sys.exit("error: model download was corrupted — please retry")
+        os.replace(tmp, path)
+    return path
+
+
+def _u2net_alpha(img):
+    """Minimal U^2-Net inference on plain onnxruntime; mirrors rembg's
+    pre/post-processing (320x320, ImageNet-style normalization over the
+    image max, min-max rescale of the predicted matte)."""
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        sys.exit("error: --ai needs onnxruntime: pip install onnxruntime "
+                 "(or the full rembg package, where it builds)")
+    sess = ort.InferenceSession(_u2net_model_path(),
+                                providers=["CPUExecutionProvider"])
+    h, w = img.shape[:2]
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    small = cv2.resize(rgb, (320, 320),
+                       interpolation=cv2.INTER_LANCZOS4).astype(np.float32)
+    small /= max(float(small.max()), 1e-6)
+    small = (small - (0.485, 0.456, 0.406)) / (0.229, 0.224, 0.225)
+    inp = small.transpose(2, 0, 1)[None].astype(np.float32)
+    pred = sess.run(None, {sess.get_inputs()[0].name: inp})[0][0, 0]
+    pred = (pred - pred.min()) / max(float(pred.max() - pred.min()), 1e-6)
+    alpha = cv2.resize(pred.astype(np.float32), (w, h),
+                       interpolation=cv2.INTER_LANCZOS4)
+    return np.clip(alpha, 0.0, 1.0)
 
 
 def grabcut_refine(img, mask, iters=3, max_dim=1400):

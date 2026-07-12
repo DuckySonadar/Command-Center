@@ -115,13 +115,17 @@ For photos that defeat color logic entirely — e.g. a blue-gray object on
 a mat whose glare reflects the same blue — there's a neural option:
 
 ```bash
-pip install rembg onnxruntime   # once; first run downloads ~170 MB
+pip install onnxruntime   # once; first --ai run downloads ~170 MB
 python3 bg_remove.py IMG_2140.HEIC out.png --ai --keep-largest 1
 ```
 
-It runs fully locally (U^2-Net via rembg). `--roi`, `--min-area`,
-`--keep-largest`, `--keep-holes` and `--feather` still apply; the color
-options don't.
+It runs fully locally (U^2-Net). Plain `onnxruntime` is all it needs —
+the tool ships its own tiny model runner. If the `rembg` package happens
+to be installed it is used instead, but it's *not* required (rembg pulls
+in numba/llvmlite, which don't have prebuilt wheels on every
+Python/macOS combination and then demand cmake + LLVM to compile).
+`--roi`, `--min-area`, `--keep-largest`, `--keep-holes` and `--feather`
+still apply with `--ai`; the color options don't.
 
 ### Recipes from the test photos
 
