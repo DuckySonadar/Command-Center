@@ -195,7 +195,8 @@ red, and predicted curves magenta.
 ## Flexi fish generator (`flexifish.py`, `flexifish_nurbs.py`)
 
 Two standalone tools that generate print-in-place articulated fish as
-binary STLs (no supports, flat belly on the plate). They need:
+binary STLs (no supports, flat belly on the plate), plus two browser
+designers (see the next section). The Python tools need:
 
 ```bash
 pip install numpy scikit-image
@@ -281,6 +282,31 @@ clearances fuse — the STL will report fewer shells than expected).
 A full-res build reports `shells=` and `manifold=`; the expected shell
 count is printed next to it, and a mismatch means fused or orphaned
 parts — inspect before printing.
+
+## Fish designers in the browser (`fish_designer.html`, `fish_designer_nurbs.html`)
+
+Two self-contained web apps (no server, no dependencies — just open the
+file in a browser). Both show a live 3D preview with segment-cut
+grooves, run the same layout/joint validation as the Python tools, and
+export a JSON you feed back to the generator for the printable STL.
+The in-browser "Save STL" is a welded display model only — the real
+print-in-place joints come from the Python side.
+
+- **`fish_designer.html`** drives the original blob fish: sliders only,
+  exports a `--config` JSON for `flexifish.py`.
+- **`fish_designer_nurbs.html`** drives the NURBS fish and adds the
+  drawing interface: **Draw side** and **Draw top** modes show the
+  curves with draggable control points (tap a point, drag it; ＋/−
+  point buttons edit the active curve; × on a fin chip removes that
+  fin). Region bands (head / dorsal / tail / caudal) and joint cut
+  lines update live as you draw, the region sliders sit in the right
+  panel, and **Shape JSON** exports a file for
+  `flexifish_nurbs.py --shape`. The JS is a numerically faithful port
+  of the Python pipeline (same curves, same regions, same joint
+  sizing), so what you draw is what prints.
+
+On a phone the panel docks to the bottom half; one finger drags points,
+two fingers pan/zoom the drawing.
 
 ## Adding a new utility later
 
