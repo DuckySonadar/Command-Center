@@ -192,6 +192,96 @@ to invent), and `--anchor-pts` (how much of the good border defines each
 tangent). The `--debug` overlay draws distinct border green, indistinct
 red, and predicted curves magenta.
 
+## Flexi fish generator (`flexifish.py`, `flexifish_nurbs.py`)
+
+Two standalone tools that generate print-in-place articulated fish as
+binary STLs (no supports, flat belly on the plate). They need:
+
+```bash
+pip install numpy scikit-image
+pip install matplotlib        # optional, only for --png renders
+```
+
+`flexifish.py` is the original: the body is sculpted from smooth-blended
+blobs and everything is a numeric parameter ("slider") — see
+`--list-params`. `flexifish_nurbs.py` keeps all of its joint machinery
+and sliders but replaces the sculpting: **you draw the fish with NURBS
+curves in two views**, and named regions are derived from the drawing.
+
+```bash
+python3 flexifish_nurbs.py                          # default fish
+python3 flexifish_nurbs.py --preview --png --svg    # fast look
+python3 flexifish_nurbs.py --dump-shape             # editable template
+python3 flexifish_nurbs.py --shape my_fish.json --coupon
+```
+
+### The curves (what you draw)
+
+All coordinates are millimeters. Side view is (x, z) with z = 0 the
+build plate; top view is (x, y) with y the half-width (right side only —
+it's mirrored).
+
+| curve          | view | kind   | what it is                              |
+|----------------|------|--------|-----------------------------------------|
+| `back`         | side | open   | nose tip → caudal root, top silhouette  |
+| `belly`        | side | open   | nose tip → caudal root; dip below z=0, the plate cut makes the flat belly |
+| `plan`         | top  | open   | nose tip → caudal root, half-width      |
+| `dorsal_fin`   | side | closed | drawn overlapping the back so it fuses  |
+| `caudal_fin`   | side | closed | the tail fan — draw the fork right in   |
+| `pectoral_fin` | top  | closed | front paddle, drawn in place, overlapping the body edge |
+| `pelvic_fin`   | top  | closed | rear paddle, same rules                 |
+
+Each curve is `{"points": [[x,y],...], "degree": 3, "weights": [...]}`
+(degree and weights optional; weights > 1 pull the curve toward a
+point). The shape JSON is deep-merged over the built-in default, so a
+file containing only a new `dorsal_fin` changes just that; set a fin
+to `null` to delete it. `--svg` writes both views with the sampled
+curves, control cages, region bands and joint cuts — the fastest way
+to see what you drew.
+
+### The regions (derived, not typed in)
+
+Everything ahead of the dorsal fin outline is the **head** region: it
+stays rigid and carries the eyes and mouth. The lower head region holds
+the **pectoral** and **pelvic** fin regions — both paddles must attach
+there (validated), since their ball sockets can't straddle a joint cut.
+The dorsal outline claims the **dorsal** region: exactly one articulated
+segment with the fin centered in it. The **tail** region is the only one
+with a variable segment count (`regions.tail_segments`), and the
+**caudal** region is the solid tail-root + fan piece. Draw the dorsal
+fin far forward and its region simply fuses into the rigid head, with
+the whole span behind it becoming tail segments.
+
+### The sliders (kept from the original)
+
+Per-region scales that transform the drawn curves, smoothly blended at
+region borders — tweak inline with `--set`:
+
+```bash
+python3 flexifish_nurbs.py --set tail.length=1.3 --set head.height=0.9 \
+    --set dorsal.fin_height=1.5 --set regions.tail_segments=5 \
+    --set head.mouth_open=0.6 --set caudal.thickness=1.2
+```
+
+`head/dorsal/tail` have `.length .width .height`; `dorsal` adds
+`.fin_height`; `caudal` has `.length .height .thickness`;
+`pectoral/pelvic` have `.length .width` (about their attachment).
+Joint clearances, eyes, walls etc. are still `FishParams`
+(`--config`, `--list-params`, same as flexifish.py).
+
+The mouth is unresolved by design: today you get the original pucker
+lips plus a `head.mouth_open` slider that carves an open-mouth pocket.
+A drawn mouth curve (a groove following a side-view line, or a cut
+plane for an open jaw) is the natural next step once we decide how it
+should look.
+
+Print notes: run `--coupon` first and print the one-joint test;
+`--preview` is for looking only (at 0.62 mm voxels the 0.55 mm joint
+clearances fuse — the STL will report fewer shells than expected).
+A full-res build reports `shells=` and `manifold=`; the expected shell
+count is printed next to it, and a mismatch means fused or orphaned
+parts — inspect before printing.
+
 ## Adding a new utility later
 
 1. Write a function in `console.py` that does the work and returns a
