@@ -1,0 +1,1550 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>flexifish designer</title>
+<style>
+  :root { --bg:#101418; --panel:#1a2027ee; --ink:#dfe7ee; --dim:#8fa0af;
+          --acc:#f0913b; --err:#ff6b6b; --note:#ffc857; }
+  * { box-sizing:border-box; margin:0; }
+  html,body { height:100%; background:var(--bg); color:var(--ink);
+              font:14px/1.4 -apple-system,'Segoe UI',Roboto,sans-serif; overflow:hidden; }
+  /* canvas is a replaced element: left+right don't stretch it, so size
+     it explicitly or it stays at its intrinsic 300x150 */
+  #view { position:fixed; top:0; left:0;
+          width:calc(100vw - 300px); height:100vh;
+          touch-action:none; display:block; }
+  #topbar { position:fixed; top:0; left:0; right:0; padding:8px 12px;
+            display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+            background:linear-gradient(#101418ee,#10141800); pointer-events:none; }
+  #topbar > * { pointer-events:auto; }
+  .seg { display:flex; border:1px solid #3a4652; border-radius:8px; overflow:hidden; }
+  .seg button { background:none; border:0; color:var(--dim); padding:6px 11px;
+                font-size:13px; cursor:pointer; }
+  .seg button.on { background:var(--acc); color:#181818; font-weight:600; }
+  #status { color:var(--dim); font-size:12px; }
+  #errbar { position:fixed; top:46px; left:50%; transform:translateX(-50%);
+            background:#4a1520; color:#ffb3b3; border:1px solid #7a2535;
+            border-radius:8px; padding:6px 12px; font-size:12px; display:none;
+            max-width:92vw; z-index:20; }
+  #warn { position:fixed; left:12px; bottom:12px; max-width:min(520px,60vw);
+          font-size:12px; pointer-events:none; }
+  #warn .e { color:var(--err); } #warn .n { color:var(--note); }
+  #panel { position:fixed; top:0; right:0; bottom:0; width:300px; overflow-y:auto;
+           background:var(--panel); backdrop-filter:blur(6px); padding:52px 14px 20px; }
+  #panel h3 { font-size:11px; letter-spacing:.12em; text-transform:uppercase;
+              color:var(--acc); margin:16px 0 6px; }
+  .row { margin:7px 0; }
+  .row label { display:flex; justify-content:space-between; color:var(--dim);
+               font-size:12.5px; margin-bottom:2px; }
+  .row label b { color:var(--ink); font-weight:600; font-variant-numeric:tabular-nums; }
+  input[type=range] { width:100%; accent-color:var(--acc); }
+  .btn { background:#2a333d; color:var(--ink); border:1px solid #3a4652;
+         border-radius:8px; padding:7px 12px; font-size:13px; cursor:pointer; }
+  .btn:active { background:#38434f; }
+  #export { position:fixed; inset:0; background:#000a; display:none;
+            align-items:center; justify-content:center; z-index:10; }
+  #export .card { background:#1a2027; border:1px solid #3a4652; border-radius:12px;
+                  padding:18px; width:min(480px, 92vw); }
+  #export textarea { width:100%; height:220px; background:#10141a; color:#cfe3c8;
+                     border:1px solid #333; border-radius:8px; padding:8px;
+                     font:12px ui-monospace,monospace; }
+  #export p { color:var(--dim); font-size:12px; margin:8px 0; }
+  @media (max-width:760px) {
+    #view { width:100vw; height:56vh; }
+    #panel { top:auto; left:0; width:100%; height:44vh; padding-top:12px; }
+    #warn { bottom:calc(44vh + 8px); }
+  }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div id="topbar">
+  <div class="seg" id="mode">
+    <button data-m="live" class="on">Live</button><button data-m="release">On release</button>
+  </div>
+  <div class="seg" id="qual">
+    <button data-q="1.4">Draft</button><button data-q="1.0" class="on">Standard</button><button data-q="0.8">High</button>
+  </div>
+  <button class="btn" id="exportBtn">Config JSON</button>
+  <button class="btn" id="stlBtn">Save STL</button>
+  <button class="btn" id="camBtn">Recenter</button>
+  <span id="status">building…</span>
+</div>
+<div id="errbar"></div>
+<div id="warn"></div>
+<div id="panel"></div>
+<div id="export"><div class="card">
+  <b>flexifish.py config</b>
+  <p>Save as <code>fish.json</code> and run
+     <code>python flexifish.py --config fish.json</code> for the printable STL.</p>
+  <textarea id="exportText" readonly></textarea>
+  <p style="display:flex;gap:8px;justify-content:flex-end">
+    <button class="btn" id="copyBtn">Copy</button>
+    <button class="btn" id="closeBtn">Close</button></p>
+</div></div>
+
+<script type="text/plain" id="coresrc">
+/* fishcore.js -- JS port of the flexifish.py signed-distance field, layout
+   logic, and a surface-nets mesher for the browser designer. Numerically
+   faithful to the Python generator, so slider values translate 1:1 into a
+   JSON config for `flexifish.py --config`. */
+(function (root) {
+"use strict";
+
+const DEFAULTS = {
+  len_nose_to_dorsal: 55.0, len_dorsal_to_tail: 58.0,
+  body_width: 40.0, body_height: 38.0, belly_drop: 3.5,
+  n_segments: 5, head_length: 34.0,
+  n_blobs: 4, head_size: 1.0, head_point: 0.35,
+  eye_diameter: 12.5, eye_pos: 0.30, eye_height: 0.62, eye_proud: 3.2,
+  dorsal_length: 16.0, dorsal_height: 12.0, dorsal_rake: 0.55,
+  pec_length: 15.0, pec_pos: 0.62, pec_sweep_deg: 32.0,
+  pelvic_length: 13.0, pelvic_sweep_deg: 30.0,
+  tail_length: 40.0, tail_height: 34.0, tail_fork: 6.0,
+  fin_edge: 0.9,
+  lip_size: 1.0
+};
+const FIXED = {
+  tail_root_len: 12.0, fin_margin: 2.2, blend: 9.0,
+  clearance: 0.55, wall: 1.6, face_gap: 1.0, min_seg_len: 6.0,
+  swing_front_deg: 16.0, swing_rear_deg: 12.0,
+  dorsal_thickness: 2.8,
+  pec_width: 9.5, pec_thickness: 3.6,
+  pelvic_width: 8.5, pelvic_thickness: 3.4,
+  tail_thick_root: 4.0, tail_thick_tip: 2.2, pupil_diameter: 4.6,
+  fin_fillet: 2.8
+};
+const PROFILE = [
+  [0.30, 0.93, 0.95],
+  [0.47, 0.84, 0.905],
+  [0.71, 0.58, 0.667],
+  [0.90, 0.395, 0.405]
+];
+function profileAt(t) {
+  if (t <= PROFILE[0][0]) return [PROFILE[0][1], PROFILE[0][2]];
+  for (let i = 0; i < PROFILE.length - 1; i++) {
+    const [t0, w0, h0] = PROFILE[i], [t1, w1, h1] = PROFILE[i + 1];
+    if (t <= t1) {
+      const a = (t - t0) / (t1 - t0);
+      return [w0 + (w1 - w0) * a, h0 + (h1 - h0) * a];
+    }
+  }
+  const q = PROFILE[PROFILE.length - 1];
+  return [q[1], q[2]];
+}
+
+// ---------- SDF toolbox ----------
+function smin(a, b, k) {
+  let h = 0.5 + 0.5 * (b - a) / k;
+  h = h < 0 ? 0 : h > 1 ? 1 : h;
+  return b + (a - b) * h - k * h * (1 - h);
+}
+function smax(a, b, k) { return -smin(-a, -b, k); }
+
+function sdEllipsoid(px, py, pz, rx, ry, rz) {
+  px /= rx; py /= ry; pz /= rz;
+  const k0 = Math.sqrt(px * px + py * py + pz * pz);
+  const qx = px / rx, qy = py / ry, qz = pz / rz;
+  const k1 = Math.max(Math.sqrt(qx * qx + qy * qy + qz * qz), 1e-9);
+  return k0 > 1e-9 ? k0 * (k0 - 1) / k1 : -Math.min(rx, ry, rz);
+}
+function sdCircle2(u, v, cu, cv, r) {
+  return Math.hypot(u - cu, v - cv) - r;
+}
+function finSheet(d2, y, tRoot, tTip, u, u0, u1, edge, fillet) {
+  let s = (u - u0) / Math.max(u1 - u0, 1e-6);
+  s = s < 0 ? 0 : s > 1 ? 1 : s;
+  const t = tRoot + (tTip - tRoot) * s;
+  const slope = (tRoot - edge) / Math.max(fillet, 0.3);
+  const neg = d2 < 0 ? -d2 : 0;
+  let th = edge + slope * neg;
+  if (th > t) th = t;
+  const w = Math.abs(y) - (th - 0.6);
+  return Math.max(d2 + 0.6, w) - 0.6;
+}
+
+// ---------- build-time preparation ----------
+function coreSDF(x, y, z, C) {
+  let d = 1e9;
+  const B = C.blobs, k = C.blend;
+  for (let i = 0; i < B.length; i++) {
+    const b = B[i];
+    const e = sdEllipsoid(x - b.cx, y, z - b.cz, b.rx, b.ry, b.rz);
+    d = i === 0 ? e : smin(d, e, k);
+  }
+  const H = C.head;
+  let hd = sdEllipsoid(x - H.cx, y, z - H.cz, H.rx, H.ry, H.rz);
+  hd = smin(hd, sdEllipsoid(x - H.sx, y, z - H.sz, H.sr, H.sr, H.sr), H.k);
+  return smin(d, hd, k);
+}
+function topAt(x, C) {
+  let top = 0;
+  for (let i = 1200; i >= 0; i--) {
+    const z = i * 0.1;
+    if (coreSDF(x, 0, z, C) < 0) { top = z; break; }
+  }
+  return top;
+}
+function halfwidthAt(x, z, C) {
+  let hw = 0;
+  for (let i = 1600; i >= 0; i--) {
+    const y = i * 0.05;
+    if (coreSDF(x, y, z, C) < 0) { hw = y; break; }
+  }
+  return hw;
+}
+
+function layout(p, L) {
+  const first = p.head_length, last = L - p.tail_root_len;
+  const xd = p.len_nose_to_dorsal;
+  const wd = p.dorsal_length + 2 * p.fin_margin;
+  const n = Math.round(p.n_segments);
+  const out = { cuts: [], errors: [], dorsalOnHead: false, trimLo: 0, trimHi: 0 };
+  if (n < 1) { out.errors.push("n_segments must be >= 1"); return out; }
+  if (last - first < n * p.min_seg_len) {
+    out.errors.push("body too short for " + n + " segments (max " +
+      Math.floor((last - first) / p.min_seg_len) + " at these lengths)");
+    return out;
+  }
+  const lin = (a, b, m) => Array.from({ length: m }, (_, i) => a + (b - a) * i / (m - 1));
+  if (xd - wd / 2 <= first + 0.5) {
+    out.dorsalOnHead = true;
+    out.cuts = lin(first, last, n + 1);
+    out.trimLo = 2.0; out.trimHi = first - p.face_gap / 2 - 1.0;
+  } else {
+    let a = xd - wd / 2, b = xd + wd / 2;
+    if (b > last - 0.5) {
+      out.errors.push("dorsal fin lands in the tail piece; reduce len_nose_to_dorsal or dorsal_length");
+      return out;
+    }
+    const rem = n - 1;
+    let nb = Math.round(rem * (a - first) / Math.max((a - first) + (last - b), 1e-6));
+    nb = Math.max(0, Math.min(rem, nb));
+    while (nb > 0 && (a - first) / nb < p.min_seg_len) nb--;
+    while ((rem - nb) > 0 && (last - b) / (rem - nb) < p.min_seg_len) nb++;
+    nb = Math.max(0, Math.min(rem, nb));
+    if (nb === 0) { a = first; b = 2 * xd - a; }
+    if (rem - nb === 0) { b = last; a = 2 * xd - b; }
+    if (a < first - 1e-6 || b > last + 1e-6) {
+      out.errors.push("dorsal fin too close to head/tail to center it in a segment");
+      return out;
+    }
+    out.cuts = lin(first, a, nb + 1).concat(lin(b, last, rem - nb + 1));
+    out.trimLo = a + p.face_gap / 2 + 1.0;
+    out.trimHi = b - p.face_gap / 2 - 1.0;
+  }
+  out.cuts = [...new Set(out.cuts.map(c => Math.round(c * 1e4) / 1e4))].sort((q, w) => q - w);
+  let minSeg = 1e9;
+  for (let i = 1; i < out.cuts.length; i++) minSeg = Math.min(minSeg, out.cuts[i] - out.cuts[i - 1]);
+  if (out.cuts.length !== n + 1 || minSeg < p.min_seg_len - 1e-6) {
+    out.errors.push("segments as short as " + minSeg.toFixed(1) + " mm; reduce n_segments or move the dorsal fin");
+  }
+  return out;
+}
+
+function jointNotes(p, cuts, C) {
+  const notes = [], errors = [];
+  const segl = [];
+  for (let i = 1; i < cuts.length; i++) segl.push(cuts[i] - cuts[i - 1]);
+  const pad = p.clearance + p.wall + 2.1;
+  const info = [];
+  for (let i = 0; i < cuts.length; i++) {
+    const hw = halfwidthAt(cuts[i], 5.0, C);
+    const we = Math.min(p.wall, Math.max(1.10, 0.28 * hw));
+    let r2 = Math.min(hw - 0.8 - we - p.clearance, 5.2);
+    for (const s of [i - 1, i])
+      if (s >= 0 && s < segl.length) r2 = Math.min(r2, (segl[s] - pad) / 2);
+    if (r2 < 2.0) {
+      errors.push("joint at x=" + cuts[i].toFixed(1) + " can't fit (r2=" +
+        r2.toFixed(2) + " mm < 2.0): fewer segments, or a longer/wider fish");
+      continue;
+    }
+    if (r2 < 2.6)
+      notes.push("joint x=" + cuts[i].toFixed(0) + ": delicate (r2=" +
+        r2.toFixed(1) + " mm) -- handle gently");
+    const r1 = Math.max(1.7, 0.55 * r2);
+    const Rb = r2 + p.clearance + we;
+    const t = i / Math.max(cuts.length - 1, 1);
+    const swReq = p.swing_front_deg + (p.swing_rear_deg - p.swing_front_deg) * t;
+    const wn = Math.max(2.2, 0.85 * r1);
+    let sr = (2 * r2 - 1.4 - wn - 0.7) / (2 * Rb);
+    sr = sr < 0.05 ? 0.05 : sr > 0.98 ? 0.98 : sr;
+    const swCap = Math.asin(sr) * 180 / Math.PI;
+    const sw = Math.min(swReq, swCap);
+    if (sw < swReq - 0.5)
+      notes.push("joint x=" + cuts[i].toFixed(0) + ": swing limited to \u00b1" +
+        sw.toFixed(0) + "\u00b0 (asked \u00b1" + swReq.toFixed(0) + "\u00b0)");
+    info.push({ xa: cuts[i], r2: r2, swing: sw });
+  }
+  return { notes, errors, info };
+}
+
+function prepare(overrides, showCuts) {
+  const p = Object.assign({}, DEFAULTS, FIXED, overrides || {});
+  const L = p.len_nose_to_dorsal + p.len_dorsal_to_tail;
+  const C = { p, L, blend: p.blend, showCuts: !!showCuts };
+
+  const ry0 = p.body_width / 2, rz0 = (p.body_height + p.belly_drop) / 2;
+  const nb = Math.max(2, Math.round(p.n_blobs));
+  const span = (0.90 - 0.30) / (nb - 1);
+  const rxc = Math.max(0.85 * span * L, 7.0);
+  C.blobs = [];
+  for (let i = 0; i < nb; i++) {
+    const t = 0.30 + span * i;
+    const [fw, fh] = profileAt(t);
+    const rz = rz0 * fh;
+    C.blobs.push({ cx: t * L, cz: rz - p.belly_drop, rx: rxc, ry: ry0 * fw, rz });
+  }
+  const hs = p.head_size, pt = p.head_point, hl = p.head_length;
+  const ryh = ry0 * hs, rzh = rz0 * hs, rxh = 0.62 * hl;
+  const sr = (0.80 - 0.52 * pt) * Math.min(ryh, rzh);
+  C.head = { cx: rxh + 1.0, cz: rzh - p.belly_drop, rx: rxh, ry: ryh, rz: rzh,
+             sx: sr + 0.6, sz: 0.40 * (2 * rzh - p.belly_drop), sr,
+             k: (4.0 + 9.0 * pt) * Math.min(hl / 34.0, 1.6) };
+
+  const lay = layout(p, L);
+  C.cuts = lay.cuts; C.errors = lay.errors.slice(); C.notes = [];
+  C.trimLo = lay.trimLo; C.trimHi = lay.trimHi;
+  if (!C.errors.length) {
+    const jn = jointNotes(p, C.cuts, C);
+    C.notes = jn.notes; C.errors = C.errors.concat(jn.errors);
+    C.joints = jn.info;
+  }
+
+  // tail fan
+  const Ht = p.tail_height, Lt = p.tail_length;
+  C.zped = topAt(L - 2.0, C);
+  C.tail = {
+    k: 0.45 * Ht,
+    c: [[L - 0.10 * Lt, 0.65 * C.zped, 0.18 * Ht],
+        [L + 0.34 * Lt, 0.44 * Ht, 0.20 * Ht],
+        [L + 0.72 * Lt, 0.71 * Ht, 0.29 * Ht],
+        [L + 0.66 * Lt, 0.03 * Ht, 0.28 * Ht]],
+    u0: L - 0.1 * Lt, u1: L + Lt,
+    guardX: L - 0.10 * Lt - 0.18 * Ht - 0.45 * Ht - 8
+  };
+  if (p.tail_fork > 0) {
+    const rn = p.tail_fork + 3.0;
+    C.tail.fork = [L + Lt + (rn - p.tail_fork), 0.37 * Ht, rn];
+  }
+
+  // dorsal fin
+  const xdc = p.len_nose_to_dorsal, Ld = p.dorsal_length, Hd = p.dorsal_height;
+  C.back = topAt(xdc, C);
+  const rLe = 0.40 * Ld, rTe = 0.33 * Ld, zTop = C.back + Hd;
+  C.dorsal = {
+    k: 0.5 * Ld, zTop,
+    le: [xdc - 0.5 * Ld + 0.9 * rLe,
+         zTop - rLe - p.dorsal_rake * 0.45 * Hd, rLe],
+    te: [xdc + 0.5 * Ld - 0.9 * rTe, zTop - rTe, rTe],
+    guardZ: C.back - 0.5 * Ld - 6,
+    guardX0: xdc - Ld - 12, guardX1: xdc + Ld + 12
+  };
+
+  // side fins: flat, plate-cut ball joints (rendered welded in preview)
+  C.fins = [];
+  function finGeom(xb, span2, chord, th, sw) {
+    if (span2 <= 0.5) return;
+    const rb = Math.min(Math.max(0.42 * chord, 3.0), 5.0);
+    const zc = Math.max(0.62 * rb, Math.sqrt(2 * rb * p.clearance) + 0.45);
+    const cy = halfwidthAt(xb, zc, C) - 0.2 * rb;
+    const a = sw * Math.PI / 180;
+    C.fins.push({ cx: xb, cy, cz: zc, rb, dx: Math.sin(a), dy: Math.cos(a),
+                  span: span2, chord, th, rn: 0.45 * rb,
+                  boss: rb + p.clearance + p.wall,
+                  reach: span2 + rb + 9 });
+  }
+  finGeom(p.pec_pos * p.head_length, p.pec_length, p.pec_width,
+          p.pec_thickness, p.pec_sweep_deg);
+  finGeom(xdc, p.pelvic_length, p.pelvic_width, p.pelvic_thickness,
+          p.pelvic_sweep_deg);
+
+  // eyes / pupils
+  const xe = p.eye_pos * p.head_length;
+  const ze = p.eye_height * topAt(xe, C);
+  const re = p.eye_diameter / 2;
+  const ye = halfwidthAt(xe, ze, C) + p.eye_proud - re;
+  C.eye = { xe, ze, re, ye, guardX0: xe - re - 8, guardX1: xe + re + 8 };
+  if (p.pupil_diameter > 0) {
+    const rp = p.pupil_diameter / 2;
+    const lk = [-0.28, 0.92, 0.20], nl = Math.hypot(lk[0], lk[1], lk[2]);
+    const s = re - 0.42 * rp;
+    C.pupil = { rp,
+      cx: xe + (lk[0] / nl) * s, cy: ye + (lk[1] / nl) * s, cz: ze + (lk[2] / nl) * s };
+  }
+
+  // lips
+  if (p.lip_size > 0) {
+    const tf = topAt(0.05 * L, C);
+    C.lips = { R: 0.155 * tf * p.lip_size, zc: 0.34 * tf };
+  }
+
+  // bounds
+  const yw = p.body_width / 2 +
+    Math.max(p.eye_proud, Math.max(p.pelvic_length, p.pec_length) + 7.0) + 3.0;
+  C.bounds = {
+    x0: -0.2 * topAt(0.05 * L, C) - 3.0,
+    x1: L + p.tail_length + p.tail_fork + 4.0,
+    y0: -yw, y1: yw, z0: -1.2,
+    z1: Math.max(C.dorsal.zTop, topAt(0.2 * L, C), Ht, C.eye.ze + re) + 3.0
+  };
+  return C;
+}
+
+// ---------- the field ----------
+function fishSDF(x, y, z, C) {
+  const p = C.p;
+  let d = coreSDF(x, y, z, C);
+
+  // caudal fan
+  const T = C.tail;
+  if (x > T.guardX) {
+    let c2 = smin(sdCircle2(x, z, T.c[0][0], T.c[0][1], T.c[0][2]),
+                  sdCircle2(x, z, T.c[1][0], T.c[1][1], T.c[1][2]), T.k);
+    c2 = smin(c2, sdCircle2(x, z, T.c[2][0], T.c[2][1], T.c[2][2]), T.k);
+    c2 = smin(c2, sdCircle2(x, z, T.c[3][0], T.c[3][1], T.c[3][2]), T.k);
+    if (T.fork) c2 = smax(c2, -sdCircle2(x, z, T.fork[0], T.fork[1], T.fork[2]), 4.0);
+    d = smin(d, finSheet(c2, y, p.tail_thick_root, p.tail_thick_tip, x,
+        T.u0, T.u1, p.fin_edge / 2, p.fin_fillet), 6.0);
+  }
+
+  // dorsal fin
+  const D = C.dorsal;
+  if (z > D.guardZ && x > D.guardX0 && x < D.guardX1) {
+    let d2 = smin(sdCircle2(x, z, D.le[0], D.le[1], D.le[2]),
+                  sdCircle2(x, z, D.te[0], D.te[1], D.te[2]), D.k);
+    d2 = smax(d2, C.trimLo - x, 1.5);
+    d2 = smax(d2, x - C.trimHi, 1.5);
+    d = smin(d, finSheet(d2, y, p.dorsal_thickness, 0.65 * p.dorsal_thickness,
+                         z, C.back, D.zTop, p.fin_edge / 2, p.fin_fillet), 5.0);
+  }
+
+  // side fins: socket bosses + welded ball/neck/paddle preview
+  for (let f = 0; f < C.fins.length; f++) {
+    const F = C.fins[f];
+    if (Math.abs(x - F.cx) > F.reach) continue;
+    for (let sgn = -1; sgn <= 1; sgn += 2) {
+      const cy = sgn * F.cy, dy = sgn * F.dy;
+      const bx = x - F.cx, by = y - cy, bz = z - F.cz;
+      d = smin(d, Math.hypot(bx, by, bz) - F.boss, 3.0);       // socket boss
+      const ball = Math.hypot(bx, by, bz) - F.rb;
+      const zf = F.th / 2 - 0.2, nl = F.rb + 1.6;
+      const ax = F.dx * nl, ay = dy * nl, az = zf - F.cz;
+      let t = (bx * ax + by * ay + bz * az) / (ax * ax + ay * ay + az * az);
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const neck = Math.hypot(bx - ax * t, by - ay * t, bz - az * t) - F.rn;
+      const fcx = F.cx + F.dx * (nl + F.span / 2 - 1.2);
+      const fcy = cy + dy * (nl + F.span / 2 - 1.2);
+      const a_ = (x - fcx) * dy - (y - fcy) * F.dx;
+      const b_ = (x - fcx) * F.dx + (y - fcy) * dy;
+      const pad = sdEllipsoid(a_, b_, z - zf, F.chord / 2, F.span / 2, F.th / 2);
+      d = Math.min(d, smin(smin(ball, neck, 1.5), pad, 2.0));
+    }
+  }
+
+  // eyes, pupils
+  const E = C.eye;
+  if (x > E.guardX0 && x < E.guardX1) {
+    for (let sgn = -1; sgn <= 1; sgn += 2) {
+      d = smin(d, Math.hypot(x - E.xe, y - sgn * E.ye, z - E.ze) - E.re, 3.0);
+      if (C.pupil) {
+        const P2 = C.pupil;
+        d = smax(d, -(Math.hypot(x - P2.cx, y - sgn * P2.cy, z - P2.cz) - P2.rp), 0.9);
+      }
+    }
+  }
+
+  // lips
+  if (C.lips && x < 20) {
+    const q = Math.hypot(y, (z - C.lips.zc) / 0.85) - C.lips.R;
+    d = smin(d, Math.hypot(q, x - 0.35 * C.lips.R) - 0.5 * C.lips.R, 3.0);
+  }
+
+  // build-plate cut
+  d = Math.max(d, -z);
+
+  // viewport-only segmentation grooves (never exported to print)
+  if (C.showCuts && C.cuts.length) {
+    let g = 1e9;
+    for (let i = 0; i < C.cuts.length; i++)
+      g = Math.min(g, Math.abs(x - C.cuts[i]));
+    if (g < 0.5) d = Math.max(d, Math.min(0.5 - g, d + 1.4));
+  }
+  return d;
+}
+
+// ---------- volume + surface nets ----------
+function buildMesh(overrides, res, showCuts) {
+  const t0 = Date.now();
+  const C = prepare(overrides, showCuts && true);
+  const B = C.bounds;
+  const nx = Math.max(4, Math.ceil((B.x1 - B.x0) / res) + 1);
+  const ny = Math.max(4, Math.ceil((B.y1 - B.y0) / res) + 1);
+  const nz = Math.max(4, Math.ceil((B.z1 - B.z0) / res) + 1);
+  const vol = new Float32Array(nx * ny * nz);
+  let idx = 0;
+  for (let i = 0; i < nx; i++) {
+    const x = B.x0 + i * res;
+    for (let j = 0; j < ny; j++) {
+      const y = B.y0 + j * res;
+      for (let k = 0; k < nz; k++)
+        vol[idx++] = fishSDF(x, y, B.z0 + k * res, C);
+    }
+  }
+  const mesh = surfaceNets(vol, nx, ny, nz, B.x0, B.y0, B.z0, res);
+  mesh.ms = Date.now() - t0;
+  mesh.voxels = nx * ny * nz;
+  mesh.cuts = C.cuts; mesh.notes = C.notes; mesh.errors = C.errors;
+  mesh.joints = C.joints || [];
+  mesh.size = [B.x1 - B.x0, B.y1 - B.y0, B.z1 - B.z0];
+  mesh.bounds = B;
+  return mesh;
+}
+
+function surfaceNets(vol, nx, ny, nz, ox, oy, oz, res) {
+  const YZ = ny * nz, cellIdx = new Int32Array((nx - 1) * (ny - 1) * (nz - 1)).fill(-1);
+  const verts = [];
+  const CI = (i, j, k) => (i * (ny - 1) + j) * (nz - 1) + k;
+  const V = (i, j, k) => vol[i * YZ + j * nz + k];
+  // one vertex per sign-change cell: mean of edge crossings
+  const E = [ // cell edges as corner-offset pairs
+    [0,0,0, 1,0,0],[0,1,0, 1,1,0],[0,0,1, 1,0,1],[0,1,1, 1,1,1],
+    [0,0,0, 0,1,0],[1,0,0, 1,1,0],[0,0,1, 0,1,1],[1,0,1, 1,1,1],
+    [0,0,0, 0,0,1],[1,0,0, 1,0,1],[0,1,0, 0,1,1],[1,1,0, 1,1,1]];
+  for (let i = 0; i < nx - 1; i++)
+    for (let j = 0; j < ny - 1; j++)
+      for (let k = 0; k < nz - 1; k++) {
+        let sx = 0, sy = 0, sz = 0, cnt = 0;
+        for (let e = 0; e < 12; e++) {
+          const q = E[e];
+          const a = V(i + q[0], j + q[1], k + q[2]);
+          const b = V(i + q[3], j + q[4], k + q[5]);
+          if ((a < 0) !== (b < 0)) {
+            const t = a / (a - b);
+            sx += q[0] + (q[3] - q[0]) * t;
+            sy += q[1] + (q[4] - q[1]) * t;
+            sz += q[2] + (q[5] - q[2]) * t;
+            cnt++;
+          }
+        }
+        if (cnt) {
+          cellIdx[CI(i, j, k)] = verts.length / 3;
+          verts.push(ox + (i + sx / cnt) * res,
+                     oy + (j + sy / cnt) * res,
+                     oz + (k + sz / cnt) * res);
+        }
+      }
+  // quads across sign-changing grid edges
+  const tris = [];
+  function quad(a, b, c, d2, flip) {
+    if (a < 0 || b < 0 || c < 0 || d2 < 0) return;
+    if (flip) tris.push(a, c, b, a, d2, c); else tris.push(a, b, c, a, c, d2);
+  }
+  for (let i = 0; i < nx; i++)
+    for (let j = 0; j < ny; j++)
+      for (let k = 0; k < nz; k++) {
+        const v0 = V(i, j, k);
+        if (i < nx - 1 && j > 0 && k > 0) {
+          const v1 = V(i + 1, j, k);
+          if ((v0 < 0) !== (v1 < 0))
+            quad(cellIdx[CI(i, j - 1, k - 1)], cellIdx[CI(i, j, k - 1)],
+                 cellIdx[CI(i, j, k)], cellIdx[CI(i, j - 1, k)], v0 < 0);
+        }
+        if (j < ny - 1 && i > 0 && k > 0) {
+          const v1 = V(i, j + 1, k);
+          if ((v0 < 0) !== (v1 < 0))
+            quad(cellIdx[CI(i - 1, j, k - 1)], cellIdx[CI(i - 1, j, k)],
+                 cellIdx[CI(i, j, k)], cellIdx[CI(i, j, k - 1)], v0 < 0);
+        }
+        if (k < nz - 1 && i > 0 && j > 0) {
+          const v1 = V(i, j, k + 1);
+          if ((v0 < 0) !== (v1 < 0))
+            quad(cellIdx[CI(i - 1, j - 1, k)], cellIdx[CI(i, j - 1, k)],
+                 cellIdx[CI(i, j, k)], cellIdx[CI(i - 1, j, k)], v0 < 0);
+        }
+      }
+  // normals from volume gradient
+  const nvert = verts.length / 3;
+  const normals = new Float32Array(verts.length);
+  for (let v = 0; v < nvert; v++) {
+    let gi = Math.round((verts[3 * v] - ox) / res);
+    let gj = Math.round((verts[3 * v + 1] - oy) / res);
+    let gk = Math.round((verts[3 * v + 2] - oz) / res);
+    gi = Math.min(Math.max(gi, 1), nx - 2);
+    gj = Math.min(Math.max(gj, 1), ny - 2);
+    gk = Math.min(Math.max(gk, 1), nz - 2);
+    let gx = V(gi + 1, gj, gk) - V(gi - 1, gj, gk);
+    let gy = V(gi, gj + 1, gk) - V(gi, gj - 1, gk);
+    let gz = V(gi, gj, gk + 1) - V(gi, gj, gk - 1);
+    const n = Math.hypot(gx, gy, gz) || 1;
+    normals[3 * v] = gx / n; normals[3 * v + 1] = gy / n; normals[3 * v + 2] = gz / n;
+  }
+  return { positions: new Float32Array(verts),
+           normals, indices: new Uint32Array(tris) };
+}
+
+const FishCore = { DEFAULTS, FIXED, prepare, fishSDF, buildMesh };
+if (typeof module !== "undefined" && module.exports) module.exports = FishCore;
+root.FishCore = FishCore;
+})(typeof self !== "undefined" ? self : globalThis);
+
+</script>
+<script>
+"use strict";
+// ---------- visible error reporting ----------
+const errbar = document.getElementById('errbar');
+function showErr(msg) { errbar.textContent = msg; errbar.style.display = 'block'; }
+window.addEventListener('error', e => {
+  const m = e.message || (e.target && e.target.tagName
+    ? e.target.tagName + ' failed to load' : 'unknown error');
+  showErr('Error: ' + m + (e.lineno ? ' @' + e.lineno : ''));
+});
+window.addEventListener('unhandledrejection',
+  e => showErr('Error: ' + (e.reason && e.reason.message || e.reason)));
+</script>
+<script>
+/* fishcore.js -- JS port of the flexifish.py signed-distance field, layout
+   logic, and a surface-nets mesher for the browser designer. Numerically
+   faithful to the Python generator, so slider values translate 1:1 into a
+   JSON config for `flexifish.py --config`. */
+(function (root) {
+"use strict";
+
+const DEFAULTS = {
+  len_nose_to_dorsal: 55.0, len_dorsal_to_tail: 58.0,
+  body_width: 40.0, body_height: 38.0, belly_drop: 3.5,
+  n_segments: 5, head_length: 34.0,
+  n_blobs: 4, head_size: 1.0, head_point: 0.35,
+  eye_diameter: 12.5, eye_pos: 0.30, eye_height: 0.62, eye_proud: 3.2,
+  dorsal_length: 16.0, dorsal_height: 12.0, dorsal_rake: 0.55,
+  pec_length: 15.0, pec_pos: 0.62, pec_sweep_deg: 32.0,
+  pelvic_length: 13.0, pelvic_sweep_deg: 30.0,
+  tail_length: 40.0, tail_height: 34.0, tail_fork: 6.0,
+  fin_edge: 0.9,
+  lip_size: 1.0
+};
+const FIXED = {
+  tail_root_len: 12.0, fin_margin: 2.2, blend: 9.0,
+  clearance: 0.55, wall: 1.6, face_gap: 1.0, min_seg_len: 6.0,
+  swing_front_deg: 16.0, swing_rear_deg: 12.0,
+  dorsal_thickness: 2.8,
+  pec_width: 9.5, pec_thickness: 3.6,
+  pelvic_width: 8.5, pelvic_thickness: 3.4,
+  tail_thick_root: 4.0, tail_thick_tip: 2.2, pupil_diameter: 4.6,
+  fin_fillet: 2.8
+};
+const PROFILE = [
+  [0.30, 0.93, 0.95],
+  [0.47, 0.84, 0.905],
+  [0.71, 0.58, 0.667],
+  [0.90, 0.395, 0.405]
+];
+function profileAt(t) {
+  if (t <= PROFILE[0][0]) return [PROFILE[0][1], PROFILE[0][2]];
+  for (let i = 0; i < PROFILE.length - 1; i++) {
+    const [t0, w0, h0] = PROFILE[i], [t1, w1, h1] = PROFILE[i + 1];
+    if (t <= t1) {
+      const a = (t - t0) / (t1 - t0);
+      return [w0 + (w1 - w0) * a, h0 + (h1 - h0) * a];
+    }
+  }
+  const q = PROFILE[PROFILE.length - 1];
+  return [q[1], q[2]];
+}
+
+// ---------- SDF toolbox ----------
+function smin(a, b, k) {
+  let h = 0.5 + 0.5 * (b - a) / k;
+  h = h < 0 ? 0 : h > 1 ? 1 : h;
+  return b + (a - b) * h - k * h * (1 - h);
+}
+function smax(a, b, k) { return -smin(-a, -b, k); }
+
+function sdEllipsoid(px, py, pz, rx, ry, rz) {
+  px /= rx; py /= ry; pz /= rz;
+  const k0 = Math.sqrt(px * px + py * py + pz * pz);
+  const qx = px / rx, qy = py / ry, qz = pz / rz;
+  const k1 = Math.max(Math.sqrt(qx * qx + qy * qy + qz * qz), 1e-9);
+  return k0 > 1e-9 ? k0 * (k0 - 1) / k1 : -Math.min(rx, ry, rz);
+}
+function sdCircle2(u, v, cu, cv, r) {
+  return Math.hypot(u - cu, v - cv) - r;
+}
+function finSheet(d2, y, tRoot, tTip, u, u0, u1, edge, fillet) {
+  let s = (u - u0) / Math.max(u1 - u0, 1e-6);
+  s = s < 0 ? 0 : s > 1 ? 1 : s;
+  const t = tRoot + (tTip - tRoot) * s;
+  const slope = (tRoot - edge) / Math.max(fillet, 0.3);
+  const neg = d2 < 0 ? -d2 : 0;
+  let th = edge + slope * neg;
+  if (th > t) th = t;
+  const w = Math.abs(y) - (th - 0.6);
+  return Math.max(d2 + 0.6, w) - 0.6;
+}
+
+// ---------- build-time preparation ----------
+function coreSDF(x, y, z, C) {
+  let d = 1e9;
+  const B = C.blobs, k = C.blend;
+  for (let i = 0; i < B.length; i++) {
+    const b = B[i];
+    const e = sdEllipsoid(x - b.cx, y, z - b.cz, b.rx, b.ry, b.rz);
+    d = i === 0 ? e : smin(d, e, k);
+  }
+  const H = C.head;
+  let hd = sdEllipsoid(x - H.cx, y, z - H.cz, H.rx, H.ry, H.rz);
+  hd = smin(hd, sdEllipsoid(x - H.sx, y, z - H.sz, H.sr, H.sr, H.sr), H.k);
+  return smin(d, hd, k);
+}
+function topAt(x, C) {
+  let top = 0;
+  for (let i = 1200; i >= 0; i--) {
+    const z = i * 0.1;
+    if (coreSDF(x, 0, z, C) < 0) { top = z; break; }
+  }
+  return top;
+}
+function halfwidthAt(x, z, C) {
+  let hw = 0;
+  for (let i = 1600; i >= 0; i--) {
+    const y = i * 0.05;
+    if (coreSDF(x, y, z, C) < 0) { hw = y; break; }
+  }
+  return hw;
+}
+
+function layout(p, L) {
+  const first = p.head_length, last = L - p.tail_root_len;
+  const xd = p.len_nose_to_dorsal;
+  const wd = p.dorsal_length + 2 * p.fin_margin;
+  const n = Math.round(p.n_segments);
+  const out = { cuts: [], errors: [], dorsalOnHead: false, trimLo: 0, trimHi: 0 };
+  if (n < 1) { out.errors.push("n_segments must be >= 1"); return out; }
+  if (last - first < n * p.min_seg_len) {
+    out.errors.push("body too short for " + n + " segments (max " +
+      Math.floor((last - first) / p.min_seg_len) + " at these lengths)");
+    return out;
+  }
+  const lin = (a, b, m) => Array.from({ length: m }, (_, i) => a + (b - a) * i / (m - 1));
+  if (xd - wd / 2 <= first + 0.5) {
+    out.dorsalOnHead = true;
+    out.cuts = lin(first, last, n + 1);
+    out.trimLo = 2.0; out.trimHi = first - p.face_gap / 2 - 1.0;
+  } else {
+    let a = xd - wd / 2, b = xd + wd / 2;
+    if (b > last - 0.5) {
+      out.errors.push("dorsal fin lands in the tail piece; reduce len_nose_to_dorsal or dorsal_length");
+      return out;
+    }
+    const rem = n - 1;
+    let nb = Math.round(rem * (a - first) / Math.max((a - first) + (last - b), 1e-6));
+    nb = Math.max(0, Math.min(rem, nb));
+    while (nb > 0 && (a - first) / nb < p.min_seg_len) nb--;
+    while ((rem - nb) > 0 && (last - b) / (rem - nb) < p.min_seg_len) nb++;
+    nb = Math.max(0, Math.min(rem, nb));
+    if (nb === 0) { a = first; b = 2 * xd - a; }
+    if (rem - nb === 0) { b = last; a = 2 * xd - b; }
+    if (a < first - 1e-6 || b > last + 1e-6) {
+      out.errors.push("dorsal fin too close to head/tail to center it in a segment");
+      return out;
+    }
+    out.cuts = lin(first, a, nb + 1).concat(lin(b, last, rem - nb + 1));
+    out.trimLo = a + p.face_gap / 2 + 1.0;
+    out.trimHi = b - p.face_gap / 2 - 1.0;
+  }
+  out.cuts = [...new Set(out.cuts.map(c => Math.round(c * 1e4) / 1e4))].sort((q, w) => q - w);
+  let minSeg = 1e9;
+  for (let i = 1; i < out.cuts.length; i++) minSeg = Math.min(minSeg, out.cuts[i] - out.cuts[i - 1]);
+  if (out.cuts.length !== n + 1 || minSeg < p.min_seg_len - 1e-6) {
+    out.errors.push("segments as short as " + minSeg.toFixed(1) + " mm; reduce n_segments or move the dorsal fin");
+  }
+  return out;
+}
+
+function jointNotes(p, cuts, C) {
+  const notes = [], errors = [];
+  const segl = [];
+  for (let i = 1; i < cuts.length; i++) segl.push(cuts[i] - cuts[i - 1]);
+  const pad = p.clearance + p.wall + 2.1;
+  const info = [];
+  for (let i = 0; i < cuts.length; i++) {
+    const hw = halfwidthAt(cuts[i], 5.0, C);
+    const we = Math.min(p.wall, Math.max(1.10, 0.28 * hw));
+    let r2 = Math.min(hw - 0.8 - we - p.clearance, 5.2);
+    for (const s of [i - 1, i])
+      if (s >= 0 && s < segl.length) r2 = Math.min(r2, (segl[s] - pad) / 2);
+    if (r2 < 2.0) {
+      errors.push("joint at x=" + cuts[i].toFixed(1) + " can't fit (r2=" +
+        r2.toFixed(2) + " mm < 2.0): fewer segments, or a longer/wider fish");
+      continue;
+    }
+    if (r2 < 2.6)
+      notes.push("joint x=" + cuts[i].toFixed(0) + ": delicate (r2=" +
+        r2.toFixed(1) + " mm) -- handle gently");
+    const r1 = Math.max(1.7, 0.55 * r2);
+    const Rb = r2 + p.clearance + we;
+    const t = i / Math.max(cuts.length - 1, 1);
+    const swReq = p.swing_front_deg + (p.swing_rear_deg - p.swing_front_deg) * t;
+    const wn = Math.max(2.2, 0.85 * r1);
+    let sr = (2 * r2 - 1.4 - wn - 0.7) / (2 * Rb);
+    sr = sr < 0.05 ? 0.05 : sr > 0.98 ? 0.98 : sr;
+    const swCap = Math.asin(sr) * 180 / Math.PI;
+    const sw = Math.min(swReq, swCap);
+    if (sw < swReq - 0.5)
+      notes.push("joint x=" + cuts[i].toFixed(0) + ": swing limited to \u00b1" +
+        sw.toFixed(0) + "\u00b0 (asked \u00b1" + swReq.toFixed(0) + "\u00b0)");
+    info.push({ xa: cuts[i], r2: r2, swing: sw });
+  }
+  return { notes, errors, info };
+}
+
+function prepare(overrides, showCuts) {
+  const p = Object.assign({}, DEFAULTS, FIXED, overrides || {});
+  const L = p.len_nose_to_dorsal + p.len_dorsal_to_tail;
+  const C = { p, L, blend: p.blend, showCuts: !!showCuts };
+
+  const ry0 = p.body_width / 2, rz0 = (p.body_height + p.belly_drop) / 2;
+  const nb = Math.max(2, Math.round(p.n_blobs));
+  const span = (0.90 - 0.30) / (nb - 1);
+  const rxc = Math.max(0.85 * span * L, 7.0);
+  C.blobs = [];
+  for (let i = 0; i < nb; i++) {
+    const t = 0.30 + span * i;
+    const [fw, fh] = profileAt(t);
+    const rz = rz0 * fh;
+    C.blobs.push({ cx: t * L, cz: rz - p.belly_drop, rx: rxc, ry: ry0 * fw, rz });
+  }
+  const hs = p.head_size, pt = p.head_point, hl = p.head_length;
+  const ryh = ry0 * hs, rzh = rz0 * hs, rxh = 0.62 * hl;
+  const sr = (0.80 - 0.52 * pt) * Math.min(ryh, rzh);
+  C.head = { cx: rxh + 1.0, cz: rzh - p.belly_drop, rx: rxh, ry: ryh, rz: rzh,
+             sx: sr + 0.6, sz: 0.40 * (2 * rzh - p.belly_drop), sr,
+             k: (4.0 + 9.0 * pt) * Math.min(hl / 34.0, 1.6) };
+
+  const lay = layout(p, L);
+  C.cuts = lay.cuts; C.errors = lay.errors.slice(); C.notes = [];
+  C.trimLo = lay.trimLo; C.trimHi = lay.trimHi;
+  if (!C.errors.length) {
+    const jn = jointNotes(p, C.cuts, C);
+    C.notes = jn.notes; C.errors = C.errors.concat(jn.errors);
+    C.joints = jn.info;
+  }
+
+  // tail fan
+  const Ht = p.tail_height, Lt = p.tail_length;
+  C.zped = topAt(L - 2.0, C);
+  C.tail = {
+    k: 0.45 * Ht,
+    c: [[L - 0.10 * Lt, 0.65 * C.zped, 0.18 * Ht],
+        [L + 0.34 * Lt, 0.44 * Ht, 0.20 * Ht],
+        [L + 0.72 * Lt, 0.71 * Ht, 0.29 * Ht],
+        [L + 0.66 * Lt, 0.03 * Ht, 0.28 * Ht]],
+    u0: L - 0.1 * Lt, u1: L + Lt,
+    guardX: L - 0.10 * Lt - 0.18 * Ht - 0.45 * Ht - 8
+  };
+  if (p.tail_fork > 0) {
+    const rn = p.tail_fork + 3.0;
+    C.tail.fork = [L + Lt + (rn - p.tail_fork), 0.37 * Ht, rn];
+  }
+
+  // dorsal fin
+  const xdc = p.len_nose_to_dorsal, Ld = p.dorsal_length, Hd = p.dorsal_height;
+  C.back = topAt(xdc, C);
+  const rLe = 0.40 * Ld, rTe = 0.33 * Ld, zTop = C.back + Hd;
+  C.dorsal = {
+    k: 0.5 * Ld, zTop,
+    le: [xdc - 0.5 * Ld + 0.9 * rLe,
+         zTop - rLe - p.dorsal_rake * 0.45 * Hd, rLe],
+    te: [xdc + 0.5 * Ld - 0.9 * rTe, zTop - rTe, rTe],
+    guardZ: C.back - 0.5 * Ld - 6,
+    guardX0: xdc - Ld - 12, guardX1: xdc + Ld + 12
+  };
+
+  // side fins: flat, plate-cut ball joints (rendered welded in preview)
+  C.fins = [];
+  function finGeom(xb, span2, chord, th, sw) {
+    if (span2 <= 0.5) return;
+    const rb = Math.min(Math.max(0.42 * chord, 3.0), 5.0);
+    const zc = Math.max(0.62 * rb, Math.sqrt(2 * rb * p.clearance) + 0.45);
+    const cy = halfwidthAt(xb, zc, C) - 0.2 * rb;
+    const a = sw * Math.PI / 180;
+    C.fins.push({ cx: xb, cy, cz: zc, rb, dx: Math.sin(a), dy: Math.cos(a),
+                  span: span2, chord, th, rn: 0.45 * rb,
+                  boss: rb + p.clearance + p.wall,
+                  reach: span2 + rb + 9 });
+  }
+  finGeom(p.pec_pos * p.head_length, p.pec_length, p.pec_width,
+          p.pec_thickness, p.pec_sweep_deg);
+  finGeom(xdc, p.pelvic_length, p.pelvic_width, p.pelvic_thickness,
+          p.pelvic_sweep_deg);
+
+  // eyes / pupils
+  const xe = p.eye_pos * p.head_length;
+  const ze = p.eye_height * topAt(xe, C);
+  const re = p.eye_diameter / 2;
+  const ye = halfwidthAt(xe, ze, C) + p.eye_proud - re;
+  C.eye = { xe, ze, re, ye, guardX0: xe - re - 8, guardX1: xe + re + 8 };
+  if (p.pupil_diameter > 0) {
+    const rp = p.pupil_diameter / 2;
+    const lk = [-0.28, 0.92, 0.20], nl = Math.hypot(lk[0], lk[1], lk[2]);
+    const s = re - 0.42 * rp;
+    C.pupil = { rp,
+      cx: xe + (lk[0] / nl) * s, cy: ye + (lk[1] / nl) * s, cz: ze + (lk[2] / nl) * s };
+  }
+
+  // lips
+  if (p.lip_size > 0) {
+    const tf = topAt(0.05 * L, C);
+    C.lips = { R: 0.155 * tf * p.lip_size, zc: 0.34 * tf };
+  }
+
+  // bounds
+  const yw = p.body_width / 2 +
+    Math.max(p.eye_proud, Math.max(p.pelvic_length, p.pec_length) + 7.0) + 3.0;
+  C.bounds = {
+    x0: -0.2 * topAt(0.05 * L, C) - 3.0,
+    x1: L + p.tail_length + p.tail_fork + 4.0,
+    y0: -yw, y1: yw, z0: -1.2,
+    z1: Math.max(C.dorsal.zTop, topAt(0.2 * L, C), Ht, C.eye.ze + re) + 3.0
+  };
+  return C;
+}
+
+// ---------- the field ----------
+function fishSDF(x, y, z, C) {
+  const p = C.p;
+  let d = coreSDF(x, y, z, C);
+
+  // caudal fan
+  const T = C.tail;
+  if (x > T.guardX) {
+    let c2 = smin(sdCircle2(x, z, T.c[0][0], T.c[0][1], T.c[0][2]),
+                  sdCircle2(x, z, T.c[1][0], T.c[1][1], T.c[1][2]), T.k);
+    c2 = smin(c2, sdCircle2(x, z, T.c[2][0], T.c[2][1], T.c[2][2]), T.k);
+    c2 = smin(c2, sdCircle2(x, z, T.c[3][0], T.c[3][1], T.c[3][2]), T.k);
+    if (T.fork) c2 = smax(c2, -sdCircle2(x, z, T.fork[0], T.fork[1], T.fork[2]), 4.0);
+    d = smin(d, finSheet(c2, y, p.tail_thick_root, p.tail_thick_tip, x,
+        T.u0, T.u1, p.fin_edge / 2, p.fin_fillet), 6.0);
+  }
+
+  // dorsal fin
+  const D = C.dorsal;
+  if (z > D.guardZ && x > D.guardX0 && x < D.guardX1) {
+    let d2 = smin(sdCircle2(x, z, D.le[0], D.le[1], D.le[2]),
+                  sdCircle2(x, z, D.te[0], D.te[1], D.te[2]), D.k);
+    d2 = smax(d2, C.trimLo - x, 1.5);
+    d2 = smax(d2, x - C.trimHi, 1.5);
+    d = smin(d, finSheet(d2, y, p.dorsal_thickness, 0.65 * p.dorsal_thickness,
+                         z, C.back, D.zTop, p.fin_edge / 2, p.fin_fillet), 5.0);
+  }
+
+  // side fins: socket bosses + welded ball/neck/paddle preview
+  for (let f = 0; f < C.fins.length; f++) {
+    const F = C.fins[f];
+    if (Math.abs(x - F.cx) > F.reach) continue;
+    for (let sgn = -1; sgn <= 1; sgn += 2) {
+      const cy = sgn * F.cy, dy = sgn * F.dy;
+      const bx = x - F.cx, by = y - cy, bz = z - F.cz;
+      d = smin(d, Math.hypot(bx, by, bz) - F.boss, 3.0);       // socket boss
+      const ball = Math.hypot(bx, by, bz) - F.rb;
+      const zf = F.th / 2 - 0.2, nl = F.rb + 1.6;
+      const ax = F.dx * nl, ay = dy * nl, az = zf - F.cz;
+      let t = (bx * ax + by * ay + bz * az) / (ax * ax + ay * ay + az * az);
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      const neck = Math.hypot(bx - ax * t, by - ay * t, bz - az * t) - F.rn;
+      const fcx = F.cx + F.dx * (nl + F.span / 2 - 1.2);
+      const fcy = cy + dy * (nl + F.span / 2 - 1.2);
+      const a_ = (x - fcx) * dy - (y - fcy) * F.dx;
+      const b_ = (x - fcx) * F.dx + (y - fcy) * dy;
+      const pad = sdEllipsoid(a_, b_, z - zf, F.chord / 2, F.span / 2, F.th / 2);
+      d = Math.min(d, smin(smin(ball, neck, 1.5), pad, 2.0));
+    }
+  }
+
+  // eyes, pupils
+  const E = C.eye;
+  if (x > E.guardX0 && x < E.guardX1) {
+    for (let sgn = -1; sgn <= 1; sgn += 2) {
+      d = smin(d, Math.hypot(x - E.xe, y - sgn * E.ye, z - E.ze) - E.re, 3.0);
+      if (C.pupil) {
+        const P2 = C.pupil;
+        d = smax(d, -(Math.hypot(x - P2.cx, y - sgn * P2.cy, z - P2.cz) - P2.rp), 0.9);
+      }
+    }
+  }
+
+  // lips
+  if (C.lips && x < 20) {
+    const q = Math.hypot(y, (z - C.lips.zc) / 0.85) - C.lips.R;
+    d = smin(d, Math.hypot(q, x - 0.35 * C.lips.R) - 0.5 * C.lips.R, 3.0);
+  }
+
+  // build-plate cut
+  d = Math.max(d, -z);
+
+  // viewport-only segmentation grooves (never exported to print)
+  if (C.showCuts && C.cuts.length) {
+    let g = 1e9;
+    for (let i = 0; i < C.cuts.length; i++)
+      g = Math.min(g, Math.abs(x - C.cuts[i]));
+    if (g < 0.5) d = Math.max(d, Math.min(0.5 - g, d + 1.4));
+  }
+  return d;
+}
+
+// ---------- volume + surface nets ----------
+function buildMesh(overrides, res, showCuts) {
+  const t0 = Date.now();
+  const C = prepare(overrides, showCuts && true);
+  const B = C.bounds;
+  const nx = Math.max(4, Math.ceil((B.x1 - B.x0) / res) + 1);
+  const ny = Math.max(4, Math.ceil((B.y1 - B.y0) / res) + 1);
+  const nz = Math.max(4, Math.ceil((B.z1 - B.z0) / res) + 1);
+  const vol = new Float32Array(nx * ny * nz);
+  let idx = 0;
+  for (let i = 0; i < nx; i++) {
+    const x = B.x0 + i * res;
+    for (let j = 0; j < ny; j++) {
+      const y = B.y0 + j * res;
+      for (let k = 0; k < nz; k++)
+        vol[idx++] = fishSDF(x, y, B.z0 + k * res, C);
+    }
+  }
+  const mesh = surfaceNets(vol, nx, ny, nz, B.x0, B.y0, B.z0, res);
+  mesh.ms = Date.now() - t0;
+  mesh.voxels = nx * ny * nz;
+  mesh.cuts = C.cuts; mesh.notes = C.notes; mesh.errors = C.errors;
+  mesh.joints = C.joints || [];
+  mesh.size = [B.x1 - B.x0, B.y1 - B.y0, B.z1 - B.z0];
+  mesh.bounds = B;
+  return mesh;
+}
+
+function surfaceNets(vol, nx, ny, nz, ox, oy, oz, res) {
+  const YZ = ny * nz, cellIdx = new Int32Array((nx - 1) * (ny - 1) * (nz - 1)).fill(-1);
+  const verts = [];
+  const CI = (i, j, k) => (i * (ny - 1) + j) * (nz - 1) + k;
+  const V = (i, j, k) => vol[i * YZ + j * nz + k];
+  // one vertex per sign-change cell: mean of edge crossings
+  const E = [ // cell edges as corner-offset pairs
+    [0,0,0, 1,0,0],[0,1,0, 1,1,0],[0,0,1, 1,0,1],[0,1,1, 1,1,1],
+    [0,0,0, 0,1,0],[1,0,0, 1,1,0],[0,0,1, 0,1,1],[1,0,1, 1,1,1],
+    [0,0,0, 0,0,1],[1,0,0, 1,0,1],[0,1,0, 0,1,1],[1,1,0, 1,1,1]];
+  for (let i = 0; i < nx - 1; i++)
+    for (let j = 0; j < ny - 1; j++)
+      for (let k = 0; k < nz - 1; k++) {
+        let sx = 0, sy = 0, sz = 0, cnt = 0;
+        for (let e = 0; e < 12; e++) {
+          const q = E[e];
+          const a = V(i + q[0], j + q[1], k + q[2]);
+          const b = V(i + q[3], j + q[4], k + q[5]);
+          if ((a < 0) !== (b < 0)) {
+            const t = a / (a - b);
+            sx += q[0] + (q[3] - q[0]) * t;
+            sy += q[1] + (q[4] - q[1]) * t;
+            sz += q[2] + (q[5] - q[2]) * t;
+            cnt++;
+          }
+        }
+        if (cnt) {
+          cellIdx[CI(i, j, k)] = verts.length / 3;
+          verts.push(ox + (i + sx / cnt) * res,
+                     oy + (j + sy / cnt) * res,
+                     oz + (k + sz / cnt) * res);
+        }
+      }
+  // quads across sign-changing grid edges
+  const tris = [];
+  function quad(a, b, c, d2, flip) {
+    if (a < 0 || b < 0 || c < 0 || d2 < 0) return;
+    if (flip) tris.push(a, c, b, a, d2, c); else tris.push(a, b, c, a, c, d2);
+  }
+  for (let i = 0; i < nx; i++)
+    for (let j = 0; j < ny; j++)
+      for (let k = 0; k < nz; k++) {
+        const v0 = V(i, j, k);
+        if (i < nx - 1 && j > 0 && k > 0) {
+          const v1 = V(i + 1, j, k);
+          if ((v0 < 0) !== (v1 < 0))
+            quad(cellIdx[CI(i, j - 1, k - 1)], cellIdx[CI(i, j, k - 1)],
+                 cellIdx[CI(i, j, k)], cellIdx[CI(i, j - 1, k)], v0 < 0);
+        }
+        if (j < ny - 1 && i > 0 && k > 0) {
+          const v1 = V(i, j + 1, k);
+          if ((v0 < 0) !== (v1 < 0))
+            quad(cellIdx[CI(i - 1, j, k - 1)], cellIdx[CI(i - 1, j, k)],
+                 cellIdx[CI(i, j, k)], cellIdx[CI(i, j, k - 1)], v0 < 0);
+        }
+        if (k < nz - 1 && i > 0 && j > 0) {
+          const v1 = V(i, j, k + 1);
+          if ((v0 < 0) !== (v1 < 0))
+            quad(cellIdx[CI(i - 1, j - 1, k)], cellIdx[CI(i, j - 1, k)],
+                 cellIdx[CI(i, j, k)], cellIdx[CI(i - 1, j, k)], v0 < 0);
+        }
+      }
+  // normals from volume gradient
+  const nvert = verts.length / 3;
+  const normals = new Float32Array(verts.length);
+  for (let v = 0; v < nvert; v++) {
+    let gi = Math.round((verts[3 * v] - ox) / res);
+    let gj = Math.round((verts[3 * v + 1] - oy) / res);
+    let gk = Math.round((verts[3 * v + 2] - oz) / res);
+    gi = Math.min(Math.max(gi, 1), nx - 2);
+    gj = Math.min(Math.max(gj, 1), ny - 2);
+    gk = Math.min(Math.max(gk, 1), nz - 2);
+    let gx = V(gi + 1, gj, gk) - V(gi - 1, gj, gk);
+    let gy = V(gi, gj + 1, gk) - V(gi, gj - 1, gk);
+    let gz = V(gi, gj, gk + 1) - V(gi, gj, gk - 1);
+    const n = Math.hypot(gx, gy, gz) || 1;
+    normals[3 * v] = gx / n; normals[3 * v + 1] = gy / n; normals[3 * v + 2] = gz / n;
+  }
+  return { positions: new Float32Array(verts),
+           normals, indices: new Uint32Array(tris) };
+}
+
+const FishCore = { DEFAULTS, FIXED, prepare, fishSDF, buildMesh };
+if (typeof module !== "undefined" && module.exports) module.exports = FishCore;
+root.FishCore = FishCore;
+})(typeof self !== "undefined" ? self : globalThis);
+
+</script>
+<script>
+"use strict";
+try {
+// ---------- slider spec (keys = FishParams names) ----------
+const SLIDERS = [
+ ['Body', [
+  ['body_width','Body width',20,70,.5],
+  ['body_height','Body height',20,60,.5],
+  ['belly_drop','Belly cut depth',0,10,.1],
+  ['len_nose_to_dorsal','Nose \u2192 dorsal',30,90,.5],
+  ['len_dorsal_to_tail','Dorsal \u2192 tail',30,100,.5],
+  ['n_blobs','Body blobs (smoothness)',2,10,1]]],
+ ['Head', [
+  ['head_length','Head length',20,60,.5],
+  ['head_size','Head size',0.5,1.2,.01],
+  ['head_point','Nose: sphere \u2192 point',0,1,.05]]],
+ ['Segments', [
+  ['n_segments','Segments',1,9,1]]],
+ ['Eyes & face', [
+  ['eye_diameter','Eye size',6,20,.25],
+  ['eye_pos','Eye position',.1,.6,.01],
+  ['eye_height','Eye height',.3,.85,.01],
+  ['eye_proud','Eye bulge',0,6,.1],
+  ['lip_size','Lips',0,2,.05]]],
+ ['Dorsal fin', [
+  ['dorsal_length','Length',8,30,.5],
+  ['dorsal_height','Height',4,25,.5],
+  ['dorsal_rake','Rake',0,1,.05],
+  ['fin_edge','Edge thickness (dorsal+tail)',0.5,3,.1]]],
+ ['Side fins (ball-jointed)', [
+  ['pec_length','Pectoral length',0,24,.5],
+  ['pec_pos','Pectoral position',.3,.9,.01],
+  ['pec_sweep_deg','Pectoral sweep \u00b0',0,60,1],
+  ['pelvic_length','Pelvic length',0,22,.5],
+  ['pelvic_sweep_deg','Pelvic sweep \u00b0',0,60,1]]],
+ ['Tail fin', [
+  ['tail_length','Length',20,70,.5],
+  ['tail_height','Height',15,55,.5],
+  ['tail_fork','Fork depth',0,15,.5]]]
+];
+const params = {};
+SLIDERS.forEach(([,rows]) => rows.forEach(([k]) => params[k] = FishCore.DEFAULTS[k]));
+
+// ---------- panel ----------
+const panel = document.getElementById('panel');
+SLIDERS.forEach(([title, rows]) => {
+  const h = document.createElement('h3'); h.textContent = title; panel.appendChild(h);
+  rows.forEach(([k, label, mn, mx, st]) => {
+    const row = document.createElement('div'); row.className = 'row';
+    const lab = document.createElement('label');
+    lab.innerHTML = label + ' <b></b>';
+    const val = lab.querySelector('b');
+    const inp = document.createElement('input');
+    inp.type = 'range'; inp.min = mn; inp.max = mx; inp.step = st;
+    inp.value = params[k];
+    val.textContent = params[k];
+    row.append(lab, inp); panel.appendChild(row);
+    inp.addEventListener('input', () => {
+      params[k] = +inp.value; val.textContent = inp.value;
+      if (mode === 'live') requestBuild(true);
+    });
+    inp.addEventListener('change', () => {
+      params[k] = +inp.value; requestBuild(false);
+    });
+  });
+});
+const foot = document.createElement('p');
+foot.style.cssText = 'color:#8fa0af;font-size:11.5px;margin-top:14px';
+foot.textContent = 'Grooves preview the segment cuts; side fins render welded ' +
+  'here but print as free ball joints via flexifish.py. More: --list-params';
+panel.appendChild(foot);
+
+// ---------- modes ----------
+let mode = 'live', finalRes = 1.0;
+document.getElementById('mode').addEventListener('click', e => {
+  if (!e.target.dataset.m) return;
+  mode = e.target.dataset.m;
+  [...e.currentTarget.children].forEach(b => b.classList.toggle('on', b === e.target));
+});
+document.getElementById('qual').addEventListener('click', e => {
+  if (!e.target.dataset.q) return;
+  finalRes = +e.target.dataset.q;
+  [...e.currentTarget.children].forEach(b => b.classList.toggle('on', b === e.target));
+  requestBuild(false);
+});
+
+// ---------- WebGL2 viewport (no external libraries) ----------
+const canvas = document.getElementById('view');
+const gl = canvas.getContext('webgl2', { antialias: true });
+if (!gl) { showErr('WebGL2 not available in this browser'); throw new Error('no webgl2'); }
+
+function makeProgram(vsSrc, fsSrc) {
+  const compile = (type, src) => {
+    const s = gl.createShader(type);
+    gl.shaderSource(s, src); gl.compileShader(s);
+    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS))
+      throw new Error('shader: ' + gl.getShaderInfoLog(s));
+    return s;
+  };
+  const pr = gl.createProgram();
+  gl.attachShader(pr, compile(gl.VERTEX_SHADER, vsSrc));
+  gl.attachShader(pr, compile(gl.FRAGMENT_SHADER, fsSrc));
+  gl.linkProgram(pr);
+  if (!gl.getProgramParameter(pr, gl.LINK_STATUS))
+    throw new Error('link: ' + gl.getProgramInfoLog(pr));
+  return pr;
+}
+const meshProg = makeProgram(
+'#version 300 es\n' +
+'layout(location=0) in vec3 aPos;\n' +
+'layout(location=1) in vec3 aNrm;\n' +
+'uniform mat4 uP, uV;\n' +
+'out vec3 vN; out vec3 vW;\n' +
+'void main(){ vN=aNrm; vW=aPos; gl_Position=uP*uV*vec4(aPos,1.0); }',
+'#version 300 es\n' +
+'precision highp float;\n' +
+'in vec3 vN; in vec3 vW;\n' +
+'uniform vec3 uEye;\n' +
+'out vec4 frag;\n' +
+'void main(){\n' +
+'  vec3 N = normalize(vN);\n' +
+'  if (!gl_FrontFacing) N = -N;\n' +
+'  vec3 L1 = normalize(vec3(0.5,-0.55,0.72));\n' +
+'  vec3 L2 = normalize(vec3(-0.6,0.65,0.2));\n' +
+'  float dif = max(dot(N,L1),0.0)*0.72 + max(dot(N,L2),0.0)*0.22;\n' +
+'  vec3 V = normalize(uEye - vW);\n' +
+'  float spec = pow(max(dot(N, normalize(L1+V)),0.0), 42.0)*0.35;\n' +
+'  float amb = 0.30 + 0.10*N.z;\n' +
+'  vec3 col = vec3(0.91,0.53,0.22)*(amb+dif) + vec3(spec);\n' +
+'  frag = vec4(pow(col, vec3(0.62)), 1.0);\n' +
+'}');
+const lineProg = makeProgram(
+'#version 300 es\n' +
+'layout(location=0) in vec3 aPos;\n' +
+'uniform mat4 uP, uV;\n' +
+'void main(){ gl_Position=uP*uV*vec4(aPos,1.0); }',
+'#version 300 es\n' +
+'precision highp float;\n' +
+'uniform vec3 uC;\n' +
+'out vec4 frag;\n' +
+'void main(){ frag=vec4(uC,1.0); }');
+
+// grid on the build plate (z = 0)
+const gridVerts = [];
+for (let x = -60; x <= 240; x += 15) gridVerts.push(x, -90, 0, x, 90, 0);
+for (let y = -90; y <= 90; y += 15) gridVerts.push(-60, y, 0, 240, y, 0);
+const gridVAO = gl.createVertexArray();
+gl.bindVertexArray(gridVAO);
+const gridBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, gridBuf);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(gridVerts), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+const nGrid = gridVerts.length / 3;
+
+// fish mesh buffers
+const fishVAO = gl.createVertexArray();
+gl.bindVertexArray(fishVAO);
+const posBuf = gl.createBuffer(), nrmBuf = gl.createBuffer(),
+      idxBuf = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+gl.bindBuffer(gl.ARRAY_BUFFER, nrmBuf);
+gl.enableVertexAttribArray(1);
+gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+let nIdx = 0;
+function setMesh(m) {
+  gl.bindVertexArray(fishVAO);
+  gl.bindBuffer(gl.ARRAY_BUFFER, posBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, m.positions, gl.DYNAMIC_DRAW);
+  gl.bindBuffer(gl.ARRAY_BUFFER, nrmBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, m.normals, gl.DYNAMIC_DRAW);
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, idxBuf);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, m.indices, gl.DYNAMIC_DRAW);
+  nIdx = m.indices.length;
+}
+
+// matrices (column-major)
+const FOV = 0.8;
+function perspective(fov, aspect, near, far) {
+  const f = 1 / Math.tan(fov / 2), out = new Float32Array(16);
+  out[0] = f / aspect; out[5] = f;
+  out[10] = (far + near) / (near - far); out[11] = -1;
+  out[14] = 2 * far * near / (near - far);
+  return out;
+}
+function lookAt(ex, ey, ez, tx, ty, tz) {          // up = +z
+  let fx = tx - ex, fy = ty - ey, fz = tz - ez;
+  const fl = Math.hypot(fx, fy, fz); fx /= fl; fy /= fl; fz /= fl;
+  let sx = fy, sy = -fx, sz = 0;                   // f cross up(0,0,1)
+  const sl = Math.hypot(sx, sy, sz) || 1; sx /= sl; sy /= sl; sz /= sl;
+  const ux = sy * fz - sz * fy, uy = sz * fx - sx * fz, uz = sx * fy - sy * fx;
+  return new Float32Array([
+    sx, ux, -fx, 0,
+    sy, uy, -fy, 0,
+    sz, uz, -fz, 0,
+    -(sx * ex + sy * ey + sz * ez),
+    -(ux * ex + uy * ey + uz * ez),
+    (fx * ex + fy * ey + fz * ez), 1]);
+}
+
+const orbit = { theta: -2.2, phi: 1.18, r: 260, tx: 75, ty: 0, tz: 18 };
+let eye = [0, 0, 0], lastBounds = null;
+function fitCamera(resetAngles) {
+  if (!lastBounds) return;
+  const b = lastBounds;
+  orbit.tx = (b.x0 + b.x1) / 2;
+  orbit.ty = 0;
+  orbit.tz = (b.z0 + b.z1) / 2;
+  const halfWide = Math.max(b.x1 - b.x0, b.y1 - b.y0) / 2;
+  const halfTall = (b.z1 - b.z0) / 2;
+  const aspect = canvas.width / Math.max(canvas.height, 1);
+  const tanV = Math.tan(FOV / 2);
+  const tanH = tanV * aspect;
+  const r = Math.max(halfWide / tanH, halfTall / tanV) * 1.15 + 10;
+  orbit.r = Math.min(Math.max(r, 40), 1500);
+  if (resetAngles) { orbit.theta = -2.2; orbit.phi = 1.18; }
+}
+function draw() {
+  const w = canvas.width, h = canvas.height;
+  gl.viewport(0, 0, w, h);
+  gl.clearColor(0.063, 0.078, 0.094, 1);
+  gl.enable(gl.DEPTH_TEST);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  const sp = Math.sin(orbit.phi), cp = Math.cos(orbit.phi);
+  eye = [orbit.tx + orbit.r * sp * Math.cos(orbit.theta),
+         orbit.ty + orbit.r * sp * Math.sin(orbit.theta),
+         orbit.tz + orbit.r * cp];
+  const P = perspective(FOV, w / h, 2, 4000);
+  const V = lookAt(eye[0], eye[1], eye[2], orbit.tx, orbit.ty, orbit.tz);
+  gl.useProgram(lineProg);
+  gl.uniformMatrix4fv(gl.getUniformLocation(lineProg, 'uP'), false, P);
+  gl.uniformMatrix4fv(gl.getUniformLocation(lineProg, 'uV'), false, V);
+  gl.uniform3f(gl.getUniformLocation(lineProg, 'uC'), 0.16, 0.20, 0.24);
+  gl.bindVertexArray(gridVAO);
+  gl.drawArrays(gl.LINES, 0, nGrid);
+  if (nIdx) {
+    gl.useProgram(meshProg);
+    gl.uniformMatrix4fv(gl.getUniformLocation(meshProg, 'uP'), false, P);
+    gl.uniformMatrix4fv(gl.getUniformLocation(meshProg, 'uV'), false, V);
+    gl.uniform3f(gl.getUniformLocation(meshProg, 'uEye'), eye[0], eye[1], eye[2]);
+    gl.bindVertexArray(fishVAO);
+    gl.drawElements(gl.TRIANGLES, nIdx, gl.UNSIGNED_INT, 0);
+  }
+  requestAnimationFrame(draw);
+}
+function resize() {
+  const d = Math.min(devicePixelRatio || 1, 2);
+  const r = canvas.getBoundingClientRect();
+  canvas.width = Math.max(2, Math.round(r.width * d));
+  canvas.height = Math.max(2, Math.round(r.height * d));
+}
+addEventListener('resize', () => { resize(); fitCamera(false); });
+resize();
+requestAnimationFrame(draw);
+
+// ---------- input: native touch + mouse (pointer events get eaten in iframes) ----------
+function rotateBy(dx, dy) {
+  orbit.theta -= dx * 0.006;
+  orbit.phi = Math.min(Math.max(orbit.phi - dy * 0.006, 0.08), 2.6);
+}
+function zoomBy(factor) {
+  orbit.r = Math.min(Math.max(orbit.r * factor, 40), 1500);
+}
+// touch
+let tPrev = null, tPinch = 0;
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (e.touches.length === 1) {
+    tPrev = [e.touches[0].clientX, e.touches[0].clientY];
+    tPinch = 0;
+  } else if (e.touches.length === 2) {
+    tPrev = null;
+    tPinch = Math.hypot(e.touches[0].clientX - e.touches[1].clientX,
+                        e.touches[0].clientY - e.touches[1].clientY);
+  }
+}, { passive: false });
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (e.touches.length === 1 && tPrev) {
+    const x = e.touches[0].clientX, y = e.touches[0].clientY;
+    rotateBy(x - tPrev[0], y - tPrev[1]);
+    tPrev = [x, y];
+  } else if (e.touches.length === 2) {
+    const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX,
+                         e.touches[0].clientY - e.touches[1].clientY);
+    if (tPinch && d) zoomBy(tPinch / d);
+    tPinch = d;
+  }
+}, { passive: false });
+const touchEnd = e => {
+  e.preventDefault();
+  tPrev = null; tPinch = 0;
+  if (e.touches && e.touches.length === 1)
+    tPrev = [e.touches[0].clientX, e.touches[0].clientY];
+};
+canvas.addEventListener('touchend', touchEnd, { passive: false });
+canvas.addEventListener('touchcancel', touchEnd, { passive: false });
+// mouse
+let mDown = false, mPrev = [0, 0];
+canvas.addEventListener('mousedown', e => { mDown = true; mPrev = [e.clientX, e.clientY]; });
+addEventListener('mousemove', e => {
+  if (!mDown) return;
+  rotateBy(e.clientX - mPrev[0], e.clientY - mPrev[1]);
+  mPrev = [e.clientX, e.clientY];
+});
+addEventListener('mouseup', () => { mDown = false; });
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  zoomBy(Math.exp(e.deltaY * 0.0012));
+}, { passive: false });
+
+// ---------- build pipeline: main thread first, worker if it proves out ----------
+let worker = null, workerReady = false, busy = false, queued = null;
+function onMesh(m) {
+  busy = false;
+  if (m.kind === 'export') {
+    saveSTL(m);
+    document.getElementById('status').textContent =
+      'STL saved (' + (m.indices.length / 3).toLocaleString() + ' tris)';
+    if (queued) { const q = queued; queued = null; runJob(q); }
+    return;
+  }
+  setMesh(m);
+  const first = !lastBounds;
+  lastBounds = m.bounds;
+  if (first) fitCamera(true);
+  document.getElementById('status').textContent =
+    m.size[0].toFixed(0) + '\u00d7' + m.size[1].toFixed(0) + '\u00d7' +
+    m.size[2].toFixed(0) + ' mm \u00b7 ' +
+    (m.indices.length / 3).toLocaleString() + ' tris \u00b7 ' + m.ms + ' ms' +
+    (workerReady ? '' : ' \u00b7 main thread');
+  document.getElementById('warn').innerHTML =
+    m.errors.map(t => '<div class="e">\u26a0 ' + t + '</div>').join('') +
+    m.notes.map(t => '<div class="n">' + t + '</div>').join('');
+  if (queued) { const q = queued; queued = null; runJob(q); }
+}
+function runJob(job) {
+  busy = true;
+  if (workerReady) {
+    try { worker.postMessage(job); return; }
+    catch (err) { workerReady = false; }
+  }
+  setTimeout(() => {
+    try {
+      const m = FishCore.buildMesh(job.params, job.res, job.cuts);
+      m.kind = job.kind; onMesh(m);
+    } catch (err) { busy = false; showErr('build failed: ' + err.message); }
+  }, 10);
+}
+function requestBuild(draft) {
+  const job = { params: Object.assign({}, params), kind: 'view', cuts: true,
+                res: draft ? Math.max(finalRes * 1.6, 1.4) : finalRes };
+  if (busy) { queued = job; return; }
+  runJob(job);
+}
+// try to upgrade to a worker (optional; the sandbox may block it -- fine)
+try {
+  const glue = document.getElementById('coresrc').textContent +
+    ';onmessage=function(e){if(e.data.ping){postMessage({pong:1});return;}' +
+    'var m=FishCore.buildMesh(e.data.params,e.data.res,e.data.cuts);' +
+    'm.kind=e.data.kind;' +
+    'postMessage(m,[m.positions.buffer,m.normals.buffer,m.indices.buffer]);};';
+  worker = new Worker(URL.createObjectURL(new Blob([glue], { type: 'text/javascript' })));
+  worker.onmessage = e => {
+    if (e.data.pong) { workerReady = true; return; }
+    onMesh(e.data);
+  };
+  worker.onerror = () => { workerReady = false; worker = null; };
+  worker.postMessage({ ping: 1 });
+} catch (err) { worker = null; }
+
+// ---------- export ----------
+const overlay = document.getElementById('export');
+document.getElementById('exportBtn').onclick = () => {
+  document.getElementById('exportText').value = JSON.stringify(params, null, 2);
+  overlay.style.display = 'flex';
+};
+document.getElementById('closeBtn').onclick = () => overlay.style.display = 'none';
+document.getElementById('copyBtn').onclick = () => {
+  const ta = document.getElementById('exportText');
+  ta.select();
+  try { document.execCommand('copy'); } catch (e) {}
+  if (navigator.clipboard) navigator.clipboard.writeText(ta.value).catch(() => {});
+};
+
+// ---------- binary STL export of the current design ----------
+function meshToSTL(m) {
+  const nt = m.indices.length / 3;
+  const buf = new ArrayBuffer(84 + nt * 50);
+  const dv = new DataView(buf);
+  const hdr = 'flexifish designer preview (solid display model)';
+  for (let i = 0; i < Math.min(80, hdr.length); i++)
+    dv.setUint8(i, hdr.charCodeAt(i));
+  dv.setUint32(80, nt, true);
+  const P = m.positions, I = m.indices;
+  let o = 84;
+  for (let t = 0; t < nt; t++) {
+    const a = 3 * I[3 * t], b = 3 * I[3 * t + 1], c = 3 * I[3 * t + 2];
+    const ux = P[b] - P[a], uy = P[b + 1] - P[a + 1], uz = P[b + 2] - P[a + 2];
+    const vx = P[c] - P[a], vy = P[c + 1] - P[a + 1], vz = P[c + 2] - P[a + 2];
+    let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+    const nl = Math.hypot(nx, ny, nz) || 1;
+    dv.setFloat32(o, nx / nl, true); dv.setFloat32(o + 4, ny / nl, true);
+    dv.setFloat32(o + 8, nz / nl, true); o += 12;
+    for (const vi of [a, b, c]) {
+      dv.setFloat32(o, P[vi], true);
+      dv.setFloat32(o + 4, P[vi + 1], true);
+      dv.setFloat32(o + 8, P[vi + 2], true); o += 12;
+    }
+    dv.setUint16(o, 0, true); o += 2;
+  }
+  return new Blob([buf], { type: 'model/stl' });
+}
+function saveSTL(m) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(meshToSTL(m));
+  a.download = 'flexi_fish_preview.stl';
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+}
+document.getElementById('stlBtn').onclick = () => {
+  document.getElementById('status').textContent = 'building STL…';
+  const job = { params: Object.assign({}, params), res: 0.5,
+                cuts: false, kind: 'export' };
+  if (busy) { queued = job; return; }
+  runJob(job);
+};
+
+// first build: immediate, on the main thread, so something always appears
+requestBuild(true);
+setTimeout(() => requestBuild(false), 60);
+} catch (err) { showErr('init failed: ' + err.message); throw err; }
+</script>
+</body>
+</html>
