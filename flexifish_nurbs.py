@@ -145,8 +145,11 @@ DEFAULT_SHAPE = {
         "pelvic_fin": {"closed": True,
                        "points": [[34, 12], [39, 14], [45, 18], [49, 22],
                                   [46, 24], [40, 23], [34, 17], [31, 13]]},
+        "mouth": {"points": [[1.0, 14.0], [0.6, 11.0], [2.0, 8.5],
+                             [5.5, 7.0]]},
     },
     "regions": {"tail_segments": 3, "blend_mm": 8.0},
+    "mouth": {"shape": "curve", "height": 0.0, "tilt": 0.0, "length": 14.0},
     "sliders": {
         "head": {"length": 1.0, "width": 1.0, "height": 1.0, "mouth_open": 0.0},
         "dorsal": {"length": 1.0, "width": 1.0, "height": 1.0, "fin_height": 1.0},
@@ -191,6 +194,8 @@ class ResolvedShape:
     dorsal_top_z: float = 0.0
     caudal_thick: float = 1.0          # thickness multiplier
     mouth_open: float = 0.0
+    mouth: dict = field(default_factory=dict)      # shape/height/tilt/length
+    mouth_curve: np.ndarray | None = None          # side-view samples (x, z)
     side_fins: list = field(default_factory=list)  # dicts, see below
     svg_curves: dict = field(default_factory=dict)
 
@@ -209,10 +214,36 @@ def _blend_field(x, b1, b2, v_head, v_dorsal, v_tail, blend):
     return v_head + (v_dorsal - v_head) * step(b1) + (v_tail - v_dorsal) * step(b2)
 
 
+def _logistic01(t, k=9.0):
+    """Logistic growth curve rescaled so f(0) = 0 and f(1) = 1."""
+    s = 1.0 / (1.0 + np.exp(-k * (np.clip(t, 0.0, 1.0) - 0.5)))
+    s0 = 1.0 / (1.0 + np.exp(k * 0.5))
+    s1 = 1.0 / (1.0 + np.exp(-k * 0.5))
+    return (s - s0) / (s1 - s0)
+
+
+def _polyline_dist(px, pz, pts):
+    """Unsigned distance from grid points to an open 2D polyline."""
+    d2 = None
+    for (ax, az), (bx, bz) in zip(pts, pts[1:]):
+        ex, ez = bx - ax, bz - az
+        t = np.clip(((px - ax) * ex + (pz - az) * ez)
+                    / max(ex * ex + ez * ez, 1e-12), 0.0, 1.0)
+        q = (px - ax - ex * t) ** 2 + (pz - az - ez * t) ** 2
+        d2 = q if d2 is None else np.minimum(d2, q)
+    return np.sqrt(d2)
+
+
 def _validate_spec(spec):
-    bad = set(spec) - {"curves", "regions", "sliders"}
+    bad = set(spec) - {"curves", "regions", "sliders", "mouth"}
     if bad:
         raise SystemExit(f"unknown top-level shape key(s): {sorted(bad)}")
+    bad = set(spec.get("mouth", {})) - {"shape", "height", "tilt", "length"}
+    if bad:
+        raise SystemExit(f"unknown mouth key(s): {sorted(bad)}")
+    shape = spec.get("mouth", {}).get("shape")
+    if shape is not None and shape not in ("pucker", "groove", "curve"):
+        raise SystemExit("mouth.shape must be 'pucker', 'groove' or 'curve'")
     bad = set(spec.get("curves", {})) - set(DEFAULT_SHAPE["curves"])
     if bad:
         raise SystemExit(f"unknown curve(s): {sorted(bad)} "
@@ -353,11 +384,37 @@ def resolve_shape(spec: dict, p: FishParams) -> ResolvedShape:
         S.dorsal_top_z = float(dorsal[:, 1].max())
 
     # ---- caudal fin outline -------------------------------------------
+    # length/height sliders act through a logistic falloff: no effect
+    # where the fin meets the tail root (the fused zone stays put), full
+    # effect at the farthest edge
     if caudal is not None:
-        caudal[:, 0] = b3n + (caudal[:, 0] - b3n) * slider("caudal", "length")
-        caudal[:, 1] *= slider("caudal", "height")
+        x0c, x1c = caudal[:, 0].min(), caudal[:, 0].max()
+        w = _logistic01((caudal[:, 0] - x0c) / max(x1c - x0c, 1e-6))
+        caudal[:, 0] += w * (slider("caudal", "length") - 1.0) * (caudal[:, 0] - b3n)
+        caudal[:, 1] *= 1.0 + w * (slider("caudal", "height") - 1.0)
         S.caudal = caudal
         S.caudal_thick = slider("caudal", "thickness")
+
+    # ---- mouth ---------------------------------------------------------
+    mspec = spec.get("mouth", {})
+    S.mouth = {"shape": str(mspec.get("shape", "curve")),
+               "height": float(mspec.get("height", 0.0)),
+               "tilt": float(mspec.get("tilt", 0.0)),
+               "length": float(mspec.get("length", 14.0))}
+    if S.mouth["shape"] == "curve" and "mouth" in curves:
+        mc = sample_curve(curves["mouth"], 60)
+        mc[:, 0] = remap_x(mc[:, 0])
+        mc[:, 1] += S.mouth["height"]
+        mid = mc[len(mc) // 2].copy()          # rotate about the arc midpoint
+        a = np.deg2rad(S.mouth["tilt"])
+        ca, sa = np.cos(a), np.sin(a)
+        rx = mc[:, 0] - mid[0]
+        rz = mc[:, 1] - mid[1]
+        mc[:, 0] = mid[0] + rx * ca - rz * sa
+        mc[:, 1] = mid[1] + rx * sa + rz * ca
+        S.mouth_curve = mc
+    elif S.mouth["shape"] == "curve":
+        S.mouth["shape"] = "groove"            # no curve drawn: plain plane
 
     # ---- pectoral / pelvic paddles ------------------------------------
     for name, pts, att, thick in side_specs:
@@ -388,6 +445,8 @@ def resolve_shape(spec: dict, p: FishParams) -> ResolvedShape:
         S.svg_curves["dorsal_fin"] = ("side", S.dorsal)
     if S.caudal is not None:
         S.svg_curves["caudal_fin"] = ("side", S.caudal)
+    if S.mouth_curve is not None:
+        S.svg_curves["mouth"] = ("side", S.mouth_curve)
     for g in S.side_fins:
         S.svg_curves[g["name"] + "_fin"] = ("top", g["poly"])
     return S
@@ -404,6 +463,8 @@ class NurbsFishBuilder(FishBuilder):
         tail_x1 = S.caudal[:, 0].max() if S.caudal is not None else S.b3
         p = replace(
             p,
+            # pucker lips only in pucker mode; groove modes carve instead
+            lip_size=p.lip_size if S.mouth.get("shape") == "pucker" else 0.0,
             head_length=S.b1 - S.b0,
             len_nose_to_dorsal=cx_d,
             len_dorsal_to_tail=S.b3 - cx_d,
@@ -414,6 +475,11 @@ class NurbsFishBuilder(FishBuilder):
             else p.tail_height,
         )
         super().__init__(p)
+        if (S.mouth.get("shape") in ("groove", "curve")
+                and abs(S.mouth.get("tilt", 0.0)) > 45.0):
+            self.warnings.append(
+                f"mouth plane tilted {S.mouth['tilt']:.0f} deg from vertical "
+                f"(>45): the groove may overhang and cause print errors")
 
     # ---------------- lofted body from the drawn silhouettes ----------
     def core(self, X, Y, Z):
@@ -592,10 +658,40 @@ class NurbsFishBuilder(FishBuilder):
         f = smin(smin(ball, neck, F32(1.5)), pad, F32(2.0))
         return np.maximum(f, (-Z).astype(F32))
 
-    # ---------------- face: inherited eyes/lips + optional open mouth --
+    # ---------------- face: eyes/lips/mouth ----------------------------
+    def _front_at(self, z):
+        """x of the nose front surface at height z (y = 0)."""
+        xs = np.arange(self.shape.b0 - 1.0, self.shape.b0 + 40.0, 0.05,
+                       dtype=F32)
+        f = self.core(xs, np.zeros_like(xs), np.full_like(xs, z))
+        idx = np.nonzero(f < 0)[0]
+        return float(xs[idx[0]]) if len(idx) else self.shape.b0 + 2.0
+
     def styled(self, X, Y, Z):
         d = super().styled(X, Y, Z)
         S = self.shape
+        m = S.mouth
+        if m.get("shape") in ("groove", "curve"):
+            # a groove carved where the mouth cut surface meets the nose:
+            # a tilted plane through the nose (groove) or the drawn side-
+            # view curve swept across it (curve). Limited to `length` mm
+            # around the arc midpoint, never below z = 2 (build plate + 2)
+            tf = self.top_at(0.05 * self.L)
+            if m["shape"] == "groove" or S.mouth_curve is None:
+                zm = max(0.34 * tf + m["height"], 4.0)
+                xc = self._front_at(zm)
+                a = np.deg2rad(m["tilt"])
+                t2d = np.abs((X - xc) * np.cos(a) + (Z - zm) * np.sin(a))
+                cx, cz = xc, zm
+            else:
+                t2d = _polyline_dist(X, Z, S.mouth_curve)
+                cx, cz = S.mouth_curve[len(S.mouth_curve) // 2]
+            reach = (np.sqrt((X - cx) ** 2 + Y ** 2 + (Z - cz) ** 2)
+                     - m["length"] / 2)
+            g = np.maximum(t2d - 0.8, reach)
+            g = np.maximum(g, 2.0 - Z)          # stay 2 mm off the plate
+            g = np.maximum(g, -(d + 1.4))       # only carve near the skin
+            d = smax(d, -g.astype(F32), F32(0.6))
         if S.mouth_open > 0:
             tf = self.top_at(S.b0 + 0.05 * (S.b3 - S.b0))
             R = np.clip(S.mouth_open, 0.0, 1.0) * 0.38 * tf
@@ -720,7 +816,7 @@ def apply_sets(spec: dict, sets: list[str]) -> dict:
             val = json.loads(val)
         except ValueError:
             raise SystemExit(f"bad --set '{s}' (want e.g. tail.length=1.3)")
-        if keys[0] not in ("regions", "curves", "sliders"):
+        if keys[0] not in ("regions", "curves", "sliders", "mouth"):
             keys = ["sliders"] + keys
         node = spec
         for k in keys[:-1]:
