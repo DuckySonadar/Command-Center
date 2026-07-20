@@ -167,9 +167,11 @@ const DEFAULT_SHAPE = {
                              [29, 28], [22, 26], [16, 20], [13, 15]] },
     pelvic_fin: { closed: true,
                   points: [[34, 12], [39, 14], [45, 18], [49, 22],
-                           [46, 24], [40, 23], [34, 17], [31, 13]] }
+                           [46, 24], [40, 23], [34, 17], [31, 13]] },
+    mouth: { points: [[1.0, 14.0], [0.6, 11.0], [2.0, 8.5], [5.5, 7.0]] }
   },
   regions: { tail_segments: 3, blend_mm: 8.0 },
+  mouth: { shape: 'curve', height: 0.0, tilt: 0.0, length: 14.0 },
   sliders: {
     head: { length: 1, width: 1, height: 1, mouth_open: 0 },
     dorsal: { length: 1, width: 1, height: 1, fin_height: 1 },
@@ -282,6 +284,27 @@ function interp1(x, xs, ys) {   // np.interp: clamp outside
   return ys[lo] + (ys[hi] - ys[lo]) * t;
 }
 function smoothstep01(t) { return t <= 0 ? 0 : t >= 1 ? 1 : t * t * (3 - 2 * t); }
+function logistic01(t, k) {   // logistic growth rescaled to f(0)=0, f(1)=1
+  k = k || 9.0;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  const s = 1 / (1 + Math.exp(-k * (t - 0.5)));
+  const s0 = 1 / (1 + Math.exp(k * 0.5)), s1 = 1 / (1 + Math.exp(-k * 0.5));
+  return (s - s0) / (s1 - s0);
+}
+function polylineDist(pts, px, pz) {  // unsigned distance to open polyline
+  let d2 = Infinity;
+  for (let i = 1; i < pts.length; i++) {
+    const ax = pts[i - 1][0], az = pts[i - 1][1];
+    const ex = pts[i][0] - ax, ez = pts[i][1] - az;
+    let t = ((px - ax) * ex + (pz - az) * ez) /
+            Math.max(ex * ex + ez * ez, 1e-12);
+    t = t < 0 ? 0 : t > 1 ? 1 : t;
+    const qx = px - ax - ex * t, qz = pz - az - ez * t;
+    const q = qx * qx + qz * qz;
+    if (q < d2) d2 = q;
+  }
+  return Math.sqrt(d2);
+}
 
 // ---------- shape resolution: curves + sliders -> tables + regions ------
 function resolveShape(spec, p, withSliders) {
@@ -417,14 +440,40 @@ function resolveShape(spec, p, withSliders) {
     S.dorsalTopZ = ztopF;
   }
   if (caudal) {
+    // logistic falloff: no scaling at the tail root, full at the far edge
+    let x0c = Infinity, x1c = -Infinity;
+    for (const q of caudal) {
+      if (q[0] < x0c) x0c = q[0];
+      if (q[0] > x1c) x1c = q[0];
+    }
     const cl = slider('caudal', 'length'), chh = slider('caudal', 'height');
     for (const q of caudal) {
-      q[0] = b3n + (q[0] - b3n) * cl;
-      q[1] *= chh;
+      const w = logistic01((q[0] - x0c) / Math.max(x1c - x0c, 1e-6));
+      q[0] += w * (cl - 1) * (q[0] - b3n);
+      q[1] *= 1 + w * (chh - 1);
     }
     S.caudal = caudal;
     S.caudalThick = slider('caudal', 'thickness');
   }
+  // mouth: pucker (lips) | groove (tilted plane) | curve (drawn side line)
+  const mspec = spec.mouth || {};
+  S.mouth = { shape: String(mspec.shape != null ? mspec.shape : 'curve'),
+              height: +(mspec.height || 0), tilt: +(mspec.tilt || 0),
+              length: +(mspec.length != null ? mspec.length : 14) };
+  S.mouthCurve = null;
+  if (S.mouth.shape === 'curve' && curves.mouth) {
+    const mc = sampleCurve(curves.mouth, 60);
+    for (const q of mc) { q[0] = remapX(q[0]); q[1] += S.mouth.height; }
+    const mid = [mc[mc.length >> 1][0], mc[mc.length >> 1][1]];
+    const a = S.mouth.tilt * Math.PI / 180;
+    const ca = Math.cos(a), sa = Math.sin(a);
+    for (const q of mc) {          // rotate about the arc midpoint
+      const rx = q[0] - mid[0], rz = q[1] - mid[1];
+      q[0] = mid[0] + rx * ca - rz * sa;
+      q[1] = mid[1] + rx * sa + rz * ca;
+    }
+    S.mouthCurve = mc;
+  } else if (S.mouth.shape === 'curve') S.mouth.shape = 'groove';
   for (const g of sideSpecs) {
     const region = g.name.split('_')[0];
     const dxAtt = remapX(g.att[0]) - g.att[0];
@@ -616,9 +665,98 @@ function jointNotes(p, cuts, S) {
     if (sw < swReq - 0.5)
       notes.push('joint x=' + cuts[i].toFixed(0) + ': swing limited to ±' +
         sw.toFixed(0) + '° (asked ±' + swReq.toFixed(0) + '°)');
-    info.push({ xa: cuts[i], r2, swing: sw });
+    // full geometry for the printable plate (mirrors _size_joints)
+    const top = topAt(cuts[i], S);
+    const wslot = wn + 2 * Rb * Math.sin(sw * Math.PI / 180) + 0.7;
+    const fwd = Math.sqrt(Math.max(r2 * r2 - (wslot / 2) * (wslot / 2),
+                                   0.25)) + 1.1;
+    const Hj = Math.min(0.72 * top, top - 3.2);
+    info.push({ xa: cuts[i], r2, r1, Rb, Hj, wn, wslot, swing: sw, fwd,
+                tanb: Math.tan((sw / 2 + 2.0) * Math.PI / 180) });
   }
   return { notes, errors, info };
+}
+
+// ---------- printable plate: pins, cavities, bosses, fin sockets --------
+function sdBox(x, y, z, x0, x1, y0, y1, z0, z1) {
+  const qx = Math.max(x0 - x, x - x1);
+  const qy = Math.max(y0 - y, y - y1);
+  const qz = Math.max(z0 - z, z - z1);
+  const out = Math.hypot(Math.max(qx, 0), Math.max(qy, 0), Math.max(qz, 0));
+  return out + Math.min(Math.max(qx, Math.max(qy, qz)), 0);
+}
+function jointSDF(j, x, y, z, want, frontLimit, p) {
+  const pr = Math.hypot(x - j.xa, y);
+  if (want === 'pin') {
+    const pin = polySDF(j.prof, pr, z);
+    let x0 = j.xa - j.fwd - 2.1;
+    if (frontLimit != null && frontLimit > x0) x0 = frontLimit;
+    const neck = sdBox(x, y, z, x0, j.xa + 0.3, -j.wn / 2, j.wn / 2,
+                       0.0, 0.78 * j.Hj);
+    return Math.min(pin, neck);
+  }
+  if (want === 'cav') {
+    const cav = polySDF(j.prof, pr, z) - p.clearance;
+    const slot = sdBox(x, y, z, j.xa - j.Rb - 2.0, j.xa,
+                       -j.wslot / 2, j.wslot / 2, -1.0, j.Hj + 0.5);
+    return Math.min(cav, slot);
+  }
+  // boss
+  const Hb = j.Hj + p.clearance + 2.0;
+  let b = Math.max(Math.hypot(x - j.xa, y) - j.Rb, x - (j.xa + 2.0));
+  b = Math.max(b, (j.xa - j.fwd) - x);
+  return Math.max(Math.max(b, z - Hb), -z);
+}
+const COS48 = Math.cos(48 * Math.PI / 180);
+function finCavityAt(F, x, y, z, p) {
+  let cav = Infinity;
+  for (let sgn = -1; sgn <= 1; sgn += 2) {
+    const px = x - F.cx, py = y - sgn * F.cy, pz = z - F.cz;
+    const r = Math.hypot(px, py, pz);
+    const sph = r - (F.rb + p.clearance);
+    const opening = Math.max(r - (F.boss + 2.0),
+                             COS48 * r - (px * F.dx + py * sgn * F.dy));
+    cav = Math.min(cav, Math.min(sph, opening));
+  }
+  return cav;
+}
+function plateAt(x, y, z, C, bodyF) {
+  const J = C.joints, p = C.p, ay = Math.abs(y);
+  let F = bodyF;
+  for (const Fn of C.fins)
+    if (Math.abs(x - Fn.cx) < Fn.boss + 5)
+      F = Math.max(F, -finCavityAt(Fn, x, y, z, p));
+  const nseg = J.length + 1;
+  let out = Infinity;
+  for (let i = 0; i < nseg; i++) {
+    if (i > 0 && x < J[i - 1].xa - J[i - 1].fwd - 3.0) continue;
+    if (i < nseg - 1 && x > J[i].xa + J[i].r2 + p.clearance + 3.0) continue;
+    let seg = F, bossOwn = 0, frontLimit = null;
+    if (i > 0) {
+      const jf = J[i - 1];
+      seg = Math.max(seg, (jf.xa + p.face_gap / 2 + jf.tanb * ay) - x);
+      bossOwn = jointSDF(jf, x, y, z, 'boss', null, p);
+      seg = Math.min(seg, bossOwn);
+      seg = Math.max(seg, -jointSDF(jf, x, y, z, 'cav', null, p));
+      frontLimit = jf.xa + jf.r2 + p.clearance + 0.5;
+    }
+    if (i < nseg - 1) {
+      const jr = J[i];
+      seg = Math.max(seg, x - (jr.xa - p.face_gap / 2 - jr.tanb * ay));
+      const pin = jointSDF(jr, x, y, z, 'pin', frontLimit, p);
+      const r = Math.hypot(x - jr.xa, y);
+      const Hb = jr.Hj + p.clearance + 2.0;
+      let notch = Math.max(r - (jr.Rb + 0.6),
+                           z - (Hb + 0.6 + (jr.Rb + 0.6 - r)));
+      notch = Math.max(notch, (jr.xa - jr.fwd - 0.6) - x);
+      let cut = Math.max(notch, -pin);
+      if (i > 0) cut = Math.max(cut, -bossOwn);
+      seg = Math.max(seg, -cut);
+      seg = Math.min(seg, pin);
+    }
+    if (seg < out) out = seg;
+  }
+  return out;
 }
 
 // ---------- build-time preparation ----------
@@ -637,6 +775,13 @@ function prepare(shape, overrides, showCuts) {
     const jn = jointNotes(p, C.cuts, S);
     C.notes = jn.notes; C.errors = C.errors.concat(jn.errors);
     C.joints = jn.info;
+    for (const j of C.joints) {          // pin cross-section polygon
+      const dr = j.r2 - j.r1, h1 = Math.max(1.8, 0.16 * j.Hj);
+      const zb0 = h1 + dr, zb1 = h1 + dr + 1.2;
+      const vr = [0, j.r1 - 0.35, j.r1, j.r1, j.r2, j.r2, j.r1, j.r1, 0];
+      const vz = [0, 0, 0.35, h1, zb0, zb1, zb1 + dr, j.Hj, j.Hj];
+      j.prof = polyPre(vr.map((r, i) => [r, vz[i]]));
+    }
   }
 
   if (S.caudal) {
@@ -675,9 +820,31 @@ function prepare(shape, overrides, showCuts) {
                 cz: ze + (lk[2] / nl) * s };
   }
   const L = S.b3;
-  if (p.lip_size > 0) {
+  if (p.lip_size > 0 && S.mouth.shape === 'pucker') {
     const tf = topAt(0.05 * L, S);
     C.lips = { R: 0.155 * tf * p.lip_size, zc: 0.34 * tf };
+  }
+  if (S.mouth.shape === 'groove' || S.mouth.shape === 'curve') {
+    const tf = topAt(0.05 * S.b3, S);
+    if (S.mouth.shape === 'groove' || !S.mouthCurve) {
+      const zm = Math.max(0.34 * tf + S.mouth.height, 4.0);
+      let xc = S.b0 + 2.0;                 // nose front surface at height zm
+      for (let i = 0; i <= 820; i++) {
+        const xq = S.b0 - 1.0 + i * 0.05;
+        if (coreSDF(xq, 0, zm, S) < 0) { xc = xq; break; }
+      }
+      const a = S.mouth.tilt * Math.PI / 180;
+      C.mouthG = { mode: 'plane', xc, zm, ca: Math.cos(a), sa: Math.sin(a),
+                   cx: xc, cz: zm, len: S.mouth.length };
+    } else {
+      const mid = S.mouthCurve[S.mouthCurve.length >> 1];
+      C.mouthG = { mode: 'poly', pts: S.mouthCurve,
+                   cx: mid[0], cz: mid[1], len: S.mouth.length };
+    }
+    if (Math.abs(S.mouth.tilt) > 45.0)
+      C.notes.push('mouth plane tilted ' + S.mouth.tilt.toFixed(0) +
+                   '° from vertical (>45°): the groove may overhang and ' +
+                   'cause print errors');
   }
   if (S.mouthOpen > 0) {
     const tf = topAt(S.b0 + 0.05 * (S.b3 - S.b0), S);
@@ -737,7 +904,9 @@ function finPartSDF(x, y, z, C, F, sgn, pre) {
   return smin(smin(ball, neck, 1.5), pad, 2.0);
 }
 
-function fishSDF(x, y, z, C) {
+function bodySDF(x, y, z, C) {
+  // everything except the separate side-fin parts and the viewport-only
+  // cut grooves (mirrors NurbsFishBuilder.styled on the Python side)
   const p = C.p, S = C.S;
   let d = coreSDF(x, y, z, S);
 
@@ -752,14 +921,8 @@ function fishSDF(x, y, z, C) {
 
   for (const F of C.fins) {
     if (x < F.poly.x0 - 10 || x > F.poly.x1 + 10) continue;
-    for (let sgn = -1; sgn <= 1; sgn += 2) {
-      const by = y - sgn * F.cy;
-      d = smin(d, Math.hypot(x - F.cx, by, z - F.cz) - F.boss, 3.0);
-      if (z < F.th + 6) {
-        const pre = padPre(x, y, C, F, sgn);
-        d = Math.min(d, Math.max(finPartSDF(x, y, z, C, F, sgn, pre), -z));
-      }
-    }
+    for (let sgn = -1; sgn <= 1; sgn += 2)
+      d = smin(d, Math.hypot(x - F.cx, y - sgn * F.cy, z - F.cz) - F.boss, 3.0);
   }
 
   const E = C.eye;
@@ -777,27 +940,68 @@ function fishSDF(x, y, z, C) {
     const q = Math.hypot(y, (z - C.lips.zc) / 0.85) - C.lips.R;
     d = smin(d, Math.hypot(q, x - 0.35 * C.lips.R) - 0.5 * C.lips.R, 3.0);
   }
+
+  d = Math.max(d, -z);           // build-plate cut
+
+  if (C.mouthG && x - C.mouthG.cx < C.mouthG.len / 2 + 3) {
+    const M = C.mouthG;
+    const t2d = M.mode === 'plane'
+      ? Math.abs((x - M.xc) * M.ca + (z - M.zm) * M.sa)
+      : polylineDist(M.pts, x, z);
+    let g = Math.max(t2d - 0.8,
+                     Math.hypot(x - M.cx, y, z - M.cz) - M.len / 2);
+    g = Math.max(g, 2.0 - z);         // stay 2 mm off the build plate
+    g = Math.max(g, -(d + 1.4));      // only carve near the skin
+    d = smax(d, -g, 0.6);
+  }
   if (C.mouth) {
     const M = C.mouth;
     d = smax(d, -sdEllipsoid(x - (S.b0 + 0.25 * M.R), y, z - M.zc,
                              M.R, 0.85 * M.R, 0.55 * M.R), 1.2);
   }
-
-  d = Math.max(d, -z);
-
-  if (C.showCuts && C.cuts.length) {
-    let g = 1e9;
-    for (let i = 0; i < C.cuts.length; i++)
-      g = Math.min(g, Math.abs(x - C.cuts[i]));
-    if (g < 0.5) d = Math.max(d, Math.min(0.5 - g, d + 1.4));
-  }
   return d;
 }
 
+function finPartsSDF(x, y, z, C) {
+  let f = Infinity;
+  for (const F of C.fins) {
+    if (x < F.poly.x0 - 10 || x > F.poly.x1 + 10 || z >= F.th + 6) continue;
+    for (let sgn = -1; sgn <= 1; sgn += 2) {
+      const pre = padPre(x, y, C, F, sgn);
+      const q = Math.max(finPartSDF(x, y, z, C, F, sgn, pre), -z);
+      if (q < f) f = q;
+    }
+  }
+  return f;
+}
+
+function cutGrooves(d, x, C) {
+  // viewport-only segmentation grooves; applied to the BODY, never to
+  // the separate fin parts (they are not cut by the segmentation)
+  let g = 1e9;
+  for (let i = 0; i < C.cuts.length; i++)
+    g = Math.min(g, Math.abs(x - C.cuts[i]));
+  return g < 0.5 ? Math.max(d, Math.min(0.5 - g, d + 1.4)) : d;
+}
+
+function fishSDF(x, y, z, C) {
+  let d = bodySDF(x, y, z, C);
+  if (C.showCuts && C.cuts.length) d = cutGrooves(d, x, C);
+  return Math.min(d, finPartsSDF(x, y, z, C));
+}
+
+function plateSDF(x, y, z, C) {
+  // the real printable plate: segmented body with joint pins, cavities
+  // and fin sockets, plus the free-floating fin parts
+  const out = plateAt(x, y, z, C, bodySDF(x, y, z, C));
+  return Math.min(out, finPartsSDF(x, y, z, C));
+}
+
 // ---------- volume + surface nets (silhouettes cached per grid line) ----
-function buildMesh(shape, overrides, res, showCuts) {
+function buildMesh(shape, overrides, res, showCuts, field) {
   const t0 = Date.now();
   const C = prepare(shape, overrides, showCuts);
+  if (field === 'plate' && C.errors.length) C.bounds = null;
   if (!C.bounds) {
     return { positions: new Float32Array(0), normals: new Float32Array(0),
              indices: new Uint32Array(0), errors: C.errors, notes: [],
@@ -821,6 +1025,7 @@ function buildMesh(shape, overrides, res, showCuts) {
       caudCache[k] = caudalD2(x, B.z0 + k * res, C);
     if (doDors) for (let k = 0; k < nz; k++)
       dorsCache[k] = dorsalD2(x, B.z0 + k * res, C);
+    const doMouth = C.mouthG && x - C.mouthG.cx < C.mouthG.len / 2 + 3;
     for (let j = 0; j < ny; j++) {
       const y = B.y0 + j * res;
       // per-(x,y) paddle silhouettes
@@ -847,9 +1052,6 @@ function buildMesh(shape, overrides, res, showCuts) {
           const F = C.fins[f];
           d = smin(d, Math.hypot(x - F.cx, y - pr.sgn * F.cy, z - F.cz)
                        - F.boss, 3.0);
-          if (z < F.th + 6)
-            d = Math.min(d, Math.max(
-              finPartSDF(x, y, z, C, F, pr.sgn, pr.pre), -z));
         }
         const E = C.eye;
         if (x > E.guardX0 && x < E.guardX1) {
@@ -868,17 +1070,33 @@ function buildMesh(shape, overrides, res, showCuts) {
           d = smin(d, Math.hypot(q, x - 0.35 * C.lips.R)
                        - 0.5 * C.lips.R, 3.0);
         }
+        d = Math.max(d, -z);
+        if (doMouth) {
+          const M = C.mouthG;
+          const t2d = M.mode === 'plane'
+            ? Math.abs((x - M.xc) * M.ca + (z - M.zm) * M.sa)
+            : polylineDist(M.pts, x, z);
+          let g = Math.max(t2d - 0.8,
+                           Math.hypot(x - M.cx, y, z - M.cz) - M.len / 2);
+          g = Math.max(g, 2.0 - z);
+          g = Math.max(g, -(d + 1.4));
+          d = smax(d, -g, 0.6);
+        }
         if (C.mouth) {
           const M = C.mouth;
           d = smax(d, -sdEllipsoid(x - (S.b0 + 0.25 * M.R), y, z - M.zc,
                                    M.R, 0.85 * M.R, 0.55 * M.R), 1.2);
         }
-        d = Math.max(d, -z);
-        if (C.showCuts && C.cuts.length) {
-          let g = 1e9;
-          for (let q = 0; q < C.cuts.length; q++)
-            g = Math.min(g, Math.abs(x - C.cuts[q]));
-          if (g < 0.5) d = Math.max(d, Math.min(0.5 - g, d + 1.4));
+        // the body is complete: segment it (plate) or groove it (view),
+        // then drop in the separate fin parts, which neither touches
+        if (field === 'plate') d = plateAt(x, y, z, C, d);
+        else if (C.showCuts && C.cuts.length) d = cutGrooves(d, x, C);
+        for (let f = 0; f < C.fins.length; f++) {
+          const pr = pres[f];
+          if (!pr || z >= C.fins[f].th + 6) continue;
+          const q = Math.max(
+            finPartSDF(x, y, z, C, C.fins[f], pr.sgn, pr.pre), -z);
+          if (q < d) d = q;
         }
         vol[idx++] = d;
       }
@@ -916,10 +1134,13 @@ function regionSummary(C) {
 }
 
 function surfaceNets(vol, nx, ny, nz, ox, oy, oz, res) {
-  const YZ = ny * nz, cellIdx = new Int32Array((nx - 1) * (ny - 1) * (nz - 1)).fill(-1);
+  // cell -> vertex map kept sparse: at print resolution the dense array
+  // would cost hundreds of MB, crossing cells are ~1% of the grid
+  const YZ = ny * nz, cellIdx = new Map();
   const verts = [];
   const CI = (i, j, k) => (i * (ny - 1) + j) * (nz - 1) + k;
   const V = (i, j, k) => vol[i * YZ + j * nz + k];
+  const CG = key => { const v = cellIdx.get(key); return v === undefined ? -1 : v; };
   const E = [
     [0,0,0, 1,0,0],[0,1,0, 1,1,0],[0,0,1, 1,0,1],[0,1,1, 1,1,1],
     [0,0,0, 0,1,0],[1,0,0, 1,1,0],[0,0,1, 0,1,1],[1,0,1, 1,1,1],
@@ -941,7 +1162,7 @@ function surfaceNets(vol, nx, ny, nz, ox, oy, oz, res) {
           }
         }
         if (cnt) {
-          cellIdx[CI(i, j, k)] = verts.length / 3;
+          cellIdx.set(CI(i, j, k), verts.length / 3);
           verts.push(ox + (i + sx / cnt) * res,
                      oy + (j + sy / cnt) * res,
                      oz + (k + sz / cnt) * res);
@@ -959,20 +1180,20 @@ function surfaceNets(vol, nx, ny, nz, ox, oy, oz, res) {
         if (i < nx - 1 && j > 0 && k > 0) {
           const v1 = V(i + 1, j, k);
           if ((v0 < 0) !== (v1 < 0))
-            quad(cellIdx[CI(i, j - 1, k - 1)], cellIdx[CI(i, j, k - 1)],
-                 cellIdx[CI(i, j, k)], cellIdx[CI(i, j - 1, k)], v0 < 0);
+            quad(CG(CI(i, j - 1, k - 1)), CG(CI(i, j, k - 1)),
+                 CG(CI(i, j, k)), CG(CI(i, j - 1, k)), v0 < 0);
         }
         if (j < ny - 1 && i > 0 && k > 0) {
           const v1 = V(i, j + 1, k);
           if ((v0 < 0) !== (v1 < 0))
-            quad(cellIdx[CI(i - 1, j, k - 1)], cellIdx[CI(i - 1, j, k)],
-                 cellIdx[CI(i, j, k)], cellIdx[CI(i, j, k - 1)], v0 < 0);
+            quad(CG(CI(i - 1, j, k - 1)), CG(CI(i - 1, j, k)),
+                 CG(CI(i, j, k)), CG(CI(i, j, k - 1)), v0 < 0);
         }
         if (k < nz - 1 && i > 0 && j > 0) {
           const v1 = V(i, j, k + 1);
           if ((v0 < 0) !== (v1 < 0))
-            quad(cellIdx[CI(i - 1, j - 1, k)], cellIdx[CI(i, j - 1, k)],
-                 cellIdx[CI(i, j, k)], cellIdx[CI(i - 1, j, k)], v0 < 0);
+            quad(CG(CI(i - 1, j - 1, k)), CG(CI(i, j - 1, k)),
+                 CG(CI(i, j, k)), CG(CI(i - 1, j, k)), v0 < 0);
         }
       }
   const nvert = verts.length / 3;
@@ -997,8 +1218,8 @@ function surfaceNets(vol, nx, ny, nz, ox, oy, oz, res) {
 
 const NurbsCore = { DEFAULTS, FIXED, DEFAULT_SHAPE, NS, clone, deepMerge,
                     nurbsEval, sampleCurve, resolveShape, layout, prepare,
-                    coreSDF, fishSDF, buildMesh, regionSummary,
-                    topAt, halfwidthAt };
+                    coreSDF, fishSDF, bodySDF, plateSDF, buildMesh,
+                    regionSummary, topAt, halfwidthAt };
 if (typeof module !== 'undefined' && module.exports) module.exports = NurbsCore;
 root.NurbsCore = NurbsCore;
 })(typeof self !== 'undefined' ? self : globalThis);
@@ -1026,7 +1247,8 @@ const NC = NurbsCore;
 const spec = {                       // the shape being drawn
   curves: NC.clone(NC.DEFAULT_SHAPE.curves),
   regions: NC.clone(NC.DEFAULT_SHAPE.regions),
-  sliders: NC.clone(NC.DEFAULT_SHAPE.sliders)
+  sliders: NC.clone(NC.DEFAULT_SHAPE.sliders),
+  mouth: NC.clone(NC.DEFAULT_SHAPE.mouth)
 };
 const face = Object.assign({}, NC.DEFAULTS);   // eye/lip FishParams
 
@@ -1037,8 +1259,13 @@ const SLIDERS = [
  ['Head region', [
   ['head','length','Length ×',0.5,1.6,.01],
   ['head','width','Width ×',0.5,1.6,.01],
-  ['head','height','Height ×',0.5,1.6,.01],
-  ['head','mouth_open','Mouth open',0,1,.05]]],
+  ['head','height','Height ×',0.5,1.6,.01]]],
+ ['Mouth', [
+  ['mouthsel','shape','Shape',['curve','groove','pucker'],0,0],
+  ['mouth','height','Height offset mm',-8,8,.5],
+  ['mouth','tilt','Tilt ° from vertical',-60,60,1],
+  ['mouth','length','Length mm',6,26,.5],
+  ['head','mouth_open','Open pocket',0,1,.05]]],
  ['Dorsal region', [
   ['dorsal','length','Length ×',0.5,1.6,.01],
   ['dorsal','width','Width ×',0.5,1.6,.01],
@@ -1068,11 +1295,13 @@ const SLIDERS = [
 function getSlider(group, key) {
   if (group === 'face') return face[key];
   if (group === 'regions') return spec.regions[key];
+  if (group === 'mouth' || group === 'mouthsel') return spec.mouth[key];
   return spec.sliders[group][key];
 }
 function setSlider(group, key, v) {
   if (group === 'face') face[key] = v;
   else if (group === 'regions') spec.regions[key] = v;
+  else if (group === 'mouth' || group === 'mouthsel') spec.mouth[key] = v;
   else spec.sliders[group][key] = v;
 }
 const panel = document.getElementById('panel');
@@ -1083,6 +1312,23 @@ SLIDERS.forEach(([title, rows]) => {
     const lab = document.createElement('label');
     lab.innerHTML = label + ' <b></b>';
     const val = lab.querySelector('b');
+    if (grp === 'mouthsel') {                 // dropdown row
+      const sel = document.createElement('select');
+      for (const opt of mn) {                 // mn carries the options
+        const o = document.createElement('option');
+        o.value = o.textContent = opt;
+        sel.appendChild(o);
+      }
+      sel.value = getSlider(grp, key);
+      val.textContent = '';
+      row.append(lab, sel); panel.appendChild(row);
+      sel.addEventListener('change', () => {
+        setSlider(grp, key, sel.value);
+        if (mode !== '3d') { buildChips(); redraw2d(); }
+        requestBuild(false);
+      });
+      return;
+    }
     const inp = document.createElement('input');
     inp.type = 'range'; inp.min = mn; inp.max = mx; inp.step = st;
     inp.value = getSlider(grp, key);
@@ -1094,7 +1340,8 @@ SLIDERS.forEach(([title, rows]) => {
       if (mode !== '3d') { markDirty(); redraw2d(); }
     });
     inp.addEventListener('change', () => {
-      setSlider(grp, key, +inp.value); requestBuild(false);
+      setSlider(grp, key, +inp.value); val.textContent = inp.value;
+      requestBuild(false);
       if (mode !== '3d') { markDirty(); redraw2d(); }
     });
   });
@@ -1102,8 +1349,10 @@ SLIDERS.forEach(([title, rows]) => {
 const foot = document.createElement('p');
 foot.style.cssText = 'color:#8fa0af;font-size:11.5px;margin-top:14px';
 foot.textContent = 'Draw the fish in the Side/Top views; regions and joints ' +
-  'follow the curves. Side fins render welded here but print as free ball ' +
-  'joints via flexifish_nurbs.py.';
+  'follow the curves. The 3D view welds the side fins and grooves the cut ' +
+  'lines for display only — Save STL exports the real printable plate ' +
+  '(joints, cavities, free ball-joint fins) at print resolution; run ' +
+  'flexifish_nurbs.py on the exported shape for the final print file.';
 panel.appendChild(foot);
 
 // ---------- top bar modes ----------
@@ -1137,21 +1386,25 @@ document.getElementById('qual').addEventListener('click', e => {
 // 2D curve editor
 // ======================================================================
 const VIEW_CURVES = {
-  side: ['back', 'belly', 'dorsal_fin', 'caudal_fin'],
+  side: ['back', 'belly', 'dorsal_fin', 'caudal_fin', 'mouth'],
   top: ['plan', 'pectoral_fin', 'pelvic_fin']
 };
 const CURVE_COLOR = {
   back: '#5ec8f0', belly: '#7fd8a0', plan: '#5ec8f0',
   dorsal_fin: '#f0913b', caudal_fin: '#e0709b',
-  pectoral_fin: '#f0913b', pelvic_fin: '#c9a2f2'
+  pectoral_fin: '#f0913b', pelvic_fin: '#c9a2f2', mouth: '#e8d44d'
 };
 const OPTIONAL = { dorsal_fin: 1, caudal_fin: 1, pectoral_fin: 1, pelvic_fin: 1 };
+function curveShown(name) {          // mouth curve only in curve mode
+  return !!spec.curves[name] &&
+         (name !== 'mouth' || spec.mouth.shape === 'curve');
+}
 let active = 'back', selPt = -1;
 const cam2d = { side: null, top: null };   // {s, ox, oy}
 const ectx = editCanvas.getContext('2d');
 
 function curCurves() {
-  return VIEW_CURVES[mode].filter(n => spec.curves[n]);
+  return VIEW_CURVES[mode].filter(curveShown);
 }
 function buildChips() {
   const box = document.getElementById('chips');
@@ -1159,6 +1412,7 @@ function buildChips() {
   if (!spec.curves[active] || VIEW_CURVES[mode].indexOf(active) < 0)
     active = curCurves()[0];
   for (const name of VIEW_CURVES[mode]) {
+    if (name === 'mouth' && spec.mouth.shape !== 'curve') continue;
     const gone = !spec.curves[name];
     const c = document.createElement('div');
     c.className = 'chip' + (name === active ? ' on' : '') + (gone ? ' gone' : '');
@@ -1708,14 +1962,23 @@ canvas.addEventListener('wheel', e => {
 // ---------- build pipeline: main thread first, worker if it proves out --
 let worker = null, workerReady = false, busy = false, queued = null;
 function shapeForBuild() {
-  return { curves: spec.curves, regions: spec.regions, sliders: spec.sliders };
+  return { curves: spec.curves, regions: spec.regions,
+           sliders: spec.sliders, mouth: spec.mouth };
 }
 function onMesh(m) {
   busy = false;
   if (m.kind === 'export') {
-    saveSTL(m);
-    document.getElementById('status').textContent =
-      'STL saved (' + (m.indices.length / 3).toLocaleString() + ' tris)';
+    if (!m.indices.length) {
+      document.getElementById('status').textContent =
+        'export blocked: fix the shape errors first';
+      document.getElementById('warn').innerHTML =
+        m.errors.map(t => '<div class="e">⚠ ' + t + '</div>').join('');
+    } else {
+      saveSTL(m);
+      document.getElementById('status').textContent =
+        'printable STL saved (' + (m.indices.length / 3).toLocaleString() +
+        ' tris)';
+    }
     if (queued) { const q = queued; queued = null; runJob(q); }
     return;
   }
@@ -1743,7 +2006,8 @@ function runJob(job) {
   }
   setTimeout(() => {
     try {
-      const m = NurbsCore.buildMesh(job.shape, job.params, job.res, job.cuts);
+      const m = NurbsCore.buildMesh(job.shape, job.params, job.res,
+                                    job.cuts, job.field);
       m.kind = job.kind; onMesh(m);
     } catch (err) { busy = false; showErr('build failed: ' + err.message); }
   }, 10);
@@ -1758,7 +2022,8 @@ function requestBuild(draft) {
 try {
   const glue = document.getElementById('coresrc').textContent +
     ';onmessage=function(e){if(e.data.ping){postMessage({pong:1});return;}' +
-    'var m=NurbsCore.buildMesh(e.data.shape,e.data.params,e.data.res,e.data.cuts);' +
+    'var m=NurbsCore.buildMesh(e.data.shape,e.data.params,e.data.res,' +
+    'e.data.cuts,e.data.field);' +
     'delete m.C;m.kind=e.data.kind;' +
     'postMessage(m,[m.positions.buffer,m.normals.buffer,m.indices.buffer]);};';
   worker = new Worker(URL.createObjectURL(new Blob([glue], { type: 'text/javascript' })));
@@ -1783,7 +2048,8 @@ function exportShape() {
     if (c.weights) out.weights = c.weights;
     curves[name] = out;
   }
-  return { curves, regions: spec.regions, sliders: spec.sliders };
+  return { curves, regions: spec.regions, sliders: spec.sliders,
+           mouth: spec.mouth };
 }
 const overlay = document.getElementById('export');
 document.getElementById('exportBtn').onclick = () => {
@@ -1810,7 +2076,7 @@ function meshToSTL(m) {
   const nt = m.indices.length / 3;
   const buf = new ArrayBuffer(84 + nt * 50);
   const dv = new DataView(buf);
-  const hdr = 'flexifish nurbs designer preview (solid display model)';
+  const hdr = 'flexifish nurbs designer printable plate';
   for (let i = 0; i < Math.min(80, hdr.length); i++)
     dv.setUint8(i, hdr.charCodeAt(i));
   dv.setUint32(80, nt, true);
@@ -1836,15 +2102,16 @@ function meshToSTL(m) {
 function saveSTL(m) {
   const a = document.createElement('a');
   a.href = URL.createObjectURL(meshToSTL(m));
-  a.download = 'flexi_fish_nurbs_preview.stl';
+  a.download = 'flexi_fish_nurbs_plate.stl';
   document.body.appendChild(a); a.click();
   setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
 }
 document.getElementById('stlBtn').onclick = () => {
-  document.getElementById('status').textContent = 'building STL…';
+  document.getElementById('status').textContent =
+    'building printable STL (segments, joints, fin sockets)…';
   const job = { shape: JSON.parse(JSON.stringify(shapeForBuild())),
                 params: Object.assign({}, face),
-                res: 0.5, cuts: false, kind: 'export' };
+                res: 0.3, cuts: false, kind: 'export', field: 'plate' };
   if (busy) { queued = job; return; }
   runJob(job);
 };

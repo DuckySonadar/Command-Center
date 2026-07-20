@@ -270,11 +270,20 @@ python3 flexifish_nurbs.py --set tail.length=1.3 --set head.height=0.9 \
 Joint clearances, eyes, walls etc. are still `FishParams`
 (`--config`, `--list-params`, same as flexifish.py).
 
-The mouth is unresolved by design: today you get the original pucker
-lips plus a `head.mouth_open` slider that carves an open-mouth pocket.
-A drawn mouth curve (a groove following a side-view line, or a cut
-plane for an open jaw) is the natural next step once we decide how it
-should look.
+The caudal fin's `length`/`height` sliders act through a logistic
+falloff — zero effect where the fin meets the tail root (the fused zone
+never distorts), full effect at the farthest edge.
+
+The mouth has three shapes (the `"mouth"` section of the shape JSON):
+`"curve"` (default) carves a groove along a NURBS `mouth` curve you
+draw in the side view, swept across the nose; `"groove"` is the same
+cut on a plain plane instead of a drawn curve; `"pucker"` is the
+original torus lips. Both groove modes share three controls —
+`mouth.height` (mm up/down), `mouth.tilt` (degrees from vertical,
+rotating about the arc midpoint; past 45° you get an overhang/print
+warning) and `mouth.length` (mm) — and the cut always stops 2 mm above
+the build plate. `head.mouth_open` still carves an open-mouth pocket on
+top of any of them.
 
 Print notes: run `--coupon` first and print the one-joint test;
 `--preview` is for looking only (at 0.62 mm voxels the 0.55 mm joint
@@ -287,10 +296,9 @@ parts — inspect before printing.
 
 Two self-contained web apps (no server, no dependencies — just open the
 file in a browser). Both show a live 3D preview with segment-cut
-grooves, run the same layout/joint validation as the Python tools, and
-export a JSON you feed back to the generator for the printable STL.
-The in-browser "Save STL" is a welded display model only — the real
-print-in-place joints come from the Python side.
+grooves (display only — the grooves and welded side fins never touch
+the printable geometry) and run the same layout/joint validation as
+the Python tools.
 
 - **`fish_designer.html`** drives the original blob fish: sliders only,
   exports a `--config` JSON for `flexifish.py`.
@@ -300,10 +308,16 @@ print-in-place joints come from the Python side.
   point buttons edit the active curve; × on a fin chip removes that
   fin). Region bands (head / dorsal / tail / caudal) and joint cut
   lines update live as you draw, the region sliders sit in the right
-  panel, and **Shape JSON** exports a file for
-  `flexifish_nurbs.py --shape`. The JS is a numerically faithful port
-  of the Python pipeline (same curves, same regions, same joint
-  sizing), so what you draw is what prints.
+  panel (including the mouth-shape dropdown), and **Shape JSON**
+  exports a file for `flexifish_nurbs.py --shape`. **Save STL** builds
+  the real printable plate in the browser — segmented body, joint pins
+  and cavities, ball-socket fin parts — at the same 0.3 mm resolution
+  the Python tool prints at (expect a few seconds; its surface-nets
+  mesher can leave a handful of non-manifold edges that slicers repair
+  automatically, so the Python build stays the pristine path). The JS
+  is a numerically faithful port of the Python pipeline (same curves,
+  same regions, same joint sizing, same plate), so what you draw is
+  what prints.
 
 On a phone the panel docks to the bottom half; one finger drags points,
 two fingers pan/zoom the drawing.

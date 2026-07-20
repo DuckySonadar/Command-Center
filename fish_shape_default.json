@@ -283,11 +283,37 @@
      13
     ]
    ]
+  },
+  "mouth": {
+   "points": [
+    [
+     1.0,
+     14.0
+    ],
+    [
+     0.6,
+     11.0
+    ],
+    [
+     2.0,
+     8.5
+    ],
+    [
+     5.5,
+     7.0
+    ]
+   ]
   }
  },
  "regions": {
   "tail_segments": 3,
   "blend_mm": 8.0
+ },
+ "mouth": {
+  "shape": "curve",
+  "height": 0.0,
+  "tilt": 0.0,
+  "length": 14.0
  },
  "sliders": {
   "head": {
