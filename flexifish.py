@@ -64,6 +64,16 @@ class FishParams:
     wall: float = 1.6                  # socket wall thickness
     min_seg_len: float = 6.0           # refuse to make segments shorter than this
 
+    # ---- segment joints: plate-cut ball captured in a spherical socket --
+    # The socket mouth is a cone whose aperture is deliberately NARROWER
+    # than the ball: `joint_capture` is that interference as a fraction of
+    # the ball radius. It is what makes a joint pop apart only under real
+    # force. The mouth is opened just wide enough for the requested swing
+    # and no wider, so grip is usually well above this floor.
+    joint_ball_max: float = 5.0        # largest ball radius (mm)
+    joint_capture: float = 0.20        # min grip (fraction of ball radius)
+    joint_neck: float = 0.40           # neck radius / ball radius
+
     # ---- eyes ----------------------------------------------------------
     eye_diameter: float = 12.5
     eye_pos: float = 0.30              # fraction along the head (0 = nose, 1 = first joint)
@@ -320,62 +330,103 @@ class FishBuilder:
                 f"segments as short as {np.diff(self.cuts).min():.1f} mm; "
                 f"reduce n_segments or move the dorsal fin")
 
-    # ---------------- joint sizing with interference limits ----------
+    # ---------------- joint sizing: plate-cut ball and socket ---------
+    @staticmethod
+    def _ball_zc(R, clearance):
+        """Ball centre height. Low enough that the ball rests on the plate
+        and prints unsupported, high enough that the socket lip still wraps
+        below its equator -- and always >80% of the ball above z = 0."""
+        return max(0.55 * R, float(np.sqrt(2 * R * clearance)) + 0.45)
+
+    @staticmethod
+    def _above_plate_frac(R, zc):
+        """Fraction of the ball's volume above the build plate."""
+        h = max(min(R - zc, 2 * R), 0.0)          # spherical cap below z = 0
+        return 1.0 - (h * h * (3 * R - h)) / (4 * R ** 3)
+
+    def _wall_for(self, R):
+        """Socket wall thins with the ball so small joints stay printable."""
+        return min(self.p.wall, max(1.0, 0.45 * R))
+
     def _size_joints(self):
         p = self.p
         cuts = self.cuts
         segl = np.diff(cuts)
         n = len(cuts)
-        hw = [self.halfwidth_at(x, 5.0) for x in cuts]
         top = [self.top_at(x) for x in cuts]
-        # socket wall adapts to slender bodies so thin fish stay possible
-        we = [min(p.wall, max(1.10, 0.28 * h)) for h in hw]
-        r2 = np.array([min(h - 0.8 - w - p.clearance, 5.2)
-                       for h, w in zip(hw, we)])
-        # Interference budget: inside each articulated segment live the FRONT
-        # joint's socket (r2_a + clearance + wall deep) and the REAR joint's
-        # boss lips + clearance notch (~r2_b + 2.1). They must never meet.
-        budget_pad = p.clearance + p.wall + 2.1
-        for i in range(n):
-            for s in (i - 1, i):              # adjacent articulated segments
-                if 0 <= s < len(segl):
-                    r2[i] = min(r2[i], (segl[s] - budget_pad) / 2.0)
         self.joints = []
         for i, xa in enumerate(cuts):
-            if r2[i] < 2.0:
+            # Largest ball whose shell fits inside the body at its own
+            # height, under the back, and end-to-end with the neighbouring
+            # joint's shell. Every term depends on R, so bisect.
+            def fits(R):
+                Rb = R + p.clearance + self._wall_for(R)
+                zc = self._ball_zc(R, p.clearance)
+                if Rb > self.halfwidth_at(xa, zc) - 0.7:
+                    return False
+                if zc + Rb > top[i] - 0.9:
+                    return False
+                for s in (i - 1, i):          # adjacent articulated segments
+                    if 0 <= s < len(segl) and 2 * Rb > segl[s] - 2.4:
+                        return False          # 2.4 = clearance + solid bridge
+                return True
+            lo, hi = 0.4, p.joint_ball_max
+            if fits(hi):
+                R = hi
+            else:
+                for _ in range(28):
+                    mid = 0.5 * (lo + hi)
+                    if fits(mid):
+                        lo = mid
+                    else:
+                        hi = mid
+                R = lo
+            we = self._wall_for(R)
+            if R < 1.6:
                 raise SystemExit(
-                    f"joint at x={xa:.1f} would need r2={r2[i]:.2f} mm "
-                    f"(<2.0 minimum). Segments are too short or the body too "
-                    f"narrow there -- reduce n_segments, lengthen the fish, "
-                    f"or widen the body.")
-            if r2[i] < 2.6:
+                    f"joint at x={xa:.1f} would need a ball of only "
+                    f"R={R:.2f} mm (<1.6 minimum). Segments are too short "
+                    f"or the body too narrow there -- reduce n_segments, "
+                    f"lengthen the fish, or widen the body.")
+            if R < 2.2:
                 self.warnings.append(
-                    f"joint at x={xa:.1f}: delicate (r2={r2[i]:.1f} mm) -- "
+                    f"joint at x={xa:.1f}: delicate (ball R={R:.1f} mm) -- "
                     f"handle gently, or widen the body")
-            r1 = max(1.7, 0.55 * r2[i])
-            Rb = r2[i] + p.clearance + we[i]
+
+            zc = self._ball_zc(R, p.clearance)
+            rn = max(1.0, p.joint_neck * R)
+            Rb = R + p.clearance + we
+            # Socket mouth: open it only as far as the requested swing needs.
+            # Aperture (R+clearance)*sin(theta) must stay under the ball
+            # radius; what is left over is the grip that resists pop-out.
             t = i / max(n - 1, 1)
             sw_req = (p.swing_front_deg
                       + (p.swing_rear_deg - p.swing_front_deg) * t)
-            wn = max(2.2, 0.85 * r1)
-            # capture: slot must stay >=0.7 mm narrower than the bulge/side
-            sw_cap = np.rad2deg(np.arcsin(np.clip(
-                (2 * r2[i] - 1.4 - wn - 0.7) / (2 * Rb), 0.05, 0.98)))
-            sw = min(sw_req, sw_cap)
+            half_neck = np.rad2deg(np.arcsin(np.clip(rn / R, 0.02, 0.95)))
+            grip_min = max(p.joint_capture * R, 0.45)   # never a token lip
+            th_max = np.rad2deg(np.arcsin(np.clip(
+                (R - grip_min) / (R + p.clearance), 0.05, 0.97)))
+            th = min(sw_req + half_neck, th_max)
+            sw = max(0.0, th - half_neck)
+            grip = R - (R + p.clearance) * np.sin(np.deg2rad(th))
             if sw < sw_req - 0.5:
                 self.warnings.append(
                     f"joint at x={xa:.1f}: swing limited to +/-{sw:.0f} deg "
-                    f"(requested {sw_req:.0f}) to keep the pin captured; "
-                    f"longer segments allow more swing")
-            wslot = wn + 2 * Rb * np.sin(np.deg2rad(sw)) + 0.7
-            fwd = float(np.sqrt(max(r2[i] ** 2 - (wslot / 2) ** 2, 0.25))
-                        + 1.1)                    # boss lip forward reach
-            Hj = min(0.72 * top[i], top[i] - 3.2)
+                    f"(requested {sw_req:.0f}) to keep the ball captured; "
+                    f"a wider body allows more swing")
+            if grip < 0.45:
+                self.warnings.append(
+                    f"joint at x={xa:.1f}: only {grip:.2f} mm of socket grip "
+                    f"-- may pop apart easily; lower swing_*_deg or raise "
+                    f"joint_capture")
             beta = sw / 2.0 + 2.0
             self.joints.append(dict(
-                xa=float(xa), hw=hw[i], top=top[i], r1=float(r1),
-                r2=float(r2[i]), Rb=float(Rb), Hj=float(Hj), wn=float(wn),
-                wslot=float(wslot), swing=float(sw), fwd=fwd,
+                xa=float(xa), top=top[i], R=float(R), zc=float(zc),
+                rn=float(rn), Rb=float(Rb), swing=float(sw),
+                theta=float(th), grip=float(grip),
+                cosO=float(np.cos(np.deg2rad(th))),
+                nl=float(Rb + 2.2),               # neck length, ball -> body
+                above=float(self._above_plate_frac(R, zc)),
                 tanb=float(np.tan(np.deg2rad(beta)))))
 
     # ---------------- fins & face -----------------------------------
@@ -536,42 +587,36 @@ class FishBuilder:
         # flat belly: the build-plate cut
         return np.maximum(d, (-Z).astype(F32))
 
-    # ---------------- joint geometry ---------------------------------
-    def _pin_profile(self, j):
-        r1, r2, Hj = j["r1"], j["r2"], j["Hj"]
-        dr = r2 - r1
-        h1 = max(1.8, 0.16 * Hj)
-        zb0, zb1 = h1 + dr, h1 + dr + 1.2
-        vr = np.array([0, r1 - 0.35, r1, r1, r2, r2, r1, r1, 0], dtype=F32)
-        vz = np.array([0, 0, 0.35, h1, zb0, zb1, zb1 + dr, Hj, Hj], dtype=F32)
-        return vr, vz
-
+    # ---------------- joint geometry: ball, socket, shell -------------
     def _joint(self, j, X, Y, Z, want, x_front_limit=None):
-        p, xa = self.p, j["xa"]
-        pr = np.sqrt((X - xa) ** 2 + Y ** 2).astype(F32)
-        vr, vz = self._pin_profile(j)
-        if want == "pin":
-            pin = sd_polygon(vr, vz, pr, Z)
-            # the neck must root 1.5 mm AHEAD of the notch front plane
-            # (xa - fwd - 0.6), or the notch severs it from its segment
-            x0 = xa - j["fwd"] - 2.1
-            if x_front_limit is not None:          # ...but stay clear of the
-                x0 = max(x0, x_front_limit)        # front joint's cavity
-            neck = sd_box(X, Y, Z, x0, xa + 0.3, -j["wn"] / 2, j["wn"] / 2,
-                          0.0, 0.78 * j["Hj"])
-            return np.minimum(pin, neck)
-        if want == "cav":
-            cav = sd_polygon(vr, vz, pr, Z) - F32(p.clearance)
-            slot = sd_box(X, Y, Z, xa - j["Rb"] - 2.0, xa,
-                          -j["wslot"] / 2, j["wslot"] / 2, -1.0, j["Hj"] + 0.5)
-            return np.minimum(cav, slot)
-        if want == "boss":
-            Hb = j["Hj"] + p.clearance + 2.0
-            b = np.maximum(sd_cyl_v(X, Y, xa, 0.0, j["Rb"]),
-                           (X - (xa + 2.0)).astype(F32))
-            b = np.maximum(b, ((xa - j["fwd"]) - X).astype(F32))
-            return np.maximum(np.maximum(b, (Z - Hb).astype(F32)),
-                              (-Z).astype(F32))
+        """All three pieces are concentric on the ball centre, so nothing
+        sticks up on a stalk to be levered out, and the socket shell is a
+        sphere that can be clipped to the body silhouette."""
+        p, xa, zc, R = self.p, j["xa"], j["zc"], j["R"]
+        px = (X - xa).astype(F32)
+        pz = (Z - zc).astype(F32)
+        r = np.sqrt(px * px + Y * Y + pz * pz).astype(F32)
+        if want == "pin":                          # ball + neck, front side
+            ball = (r - R).astype(F32)
+            x0 = xa - j["nl"]
+            if x_front_limit is not None:          # stay clear of the front
+                x0 = min(max(x0, x_front_limit), xa - R - 0.4)
+            L = max(xa - x0, 0.1)
+            t = np.clip(-px / L, 0.0, 1.0)         # capsule toward -x
+            qx = px + L * t
+            neck = (np.sqrt(qx * qx + Y * Y + pz * pz) - j["rn"]).astype(F32)
+            # the ball dips below z=0 by design; the plate cut is what
+            # gives it a flat, unsupported-printable bottom
+            return np.maximum(np.minimum(ball, neck), (-Z).astype(F32))
+        if want == "cav":                          # socket cavity + mouth
+            sph = (r - (R + p.clearance)).astype(F32)
+            mouth = np.maximum((r - (j["Rb"] + 2.0)).astype(F32),
+                               (j["cosO"] * r + px).astype(F32))
+            return np.minimum(sph, mouth)
+        if want == "boss":                         # spherical socket shell
+            return (r - j["Rb"]).astype(F32)
+        if want == "relief":                       # clearance for the shell
+            return (r - (j["Rb"] + p.clearance + 0.35)).astype(F32)
         raise ValueError(want)
 
     # ---------------- assemble the printable plate --------------------
@@ -587,29 +632,29 @@ class FishBuilder:
         out = None
         for i in range(nseg):
             seg = F.copy()
-            front_limit = None
-            if i > 0:                              # boss + cavity at the front
+            front_limit, boss_own = None, None
+            if i > 0:                              # socket at the front face
                 jf = J[i - 1]
                 bound = jf["xa"] + p.face_gap / 2 + jf["tanb"] * absY
                 seg = np.maximum(seg, (bound - X).astype(F32))
-                boss_own = self._joint(jf, X, Y, Z, "boss")
+                # clipped to the body: the shell can never bulge out of the
+                # fish even where the section is tight. Clip 0.15 mm inside
+                # the surface so the two never land exactly coincident,
+                # which marching cubes would mesh as a degenerate crease.
+                boss_own = np.maximum(self._joint(jf, X, Y, Z, "boss"),
+                                      (F + F32(0.15)))
                 seg = np.minimum(seg, boss_own)
                 seg = np.maximum(seg, -self._joint(jf, X, Y, Z, "cav"))
-                front_limit = jf["xa"] + jf["r2"] + p.clearance + 0.5
-            if i < nseg - 1:                       # pin + notch at the rear
+                front_limit = jf["xa"] + jf["Rb"] + 0.6
+            if i < nseg - 1:                       # ball + neck at the rear
                 jr = J[i]
                 bound = jr["xa"] - p.face_gap / 2 - jr["tanb"] * absY
                 seg = np.maximum(seg, (X - bound).astype(F32))
                 pin = self._joint(jr, X, Y, Z, "pin", x_front_limit=front_limit)
-                r = np.sqrt((X - jr["xa"]) ** 2 + Y ** 2).astype(F32)
-                Hb = jr["Hj"] + p.clearance + 2.0
-                notch = np.maximum(
-                    (r - (jr["Rb"] + 0.6)).astype(F32),
-                    (Z - (Hb + 0.6 + (jr["Rb"] + 0.6 - r))).astype(F32))
-                notch = np.maximum(
-                    notch, ((jr["xa"] - jr["fwd"] - 0.6) - X).astype(F32))
-                cut = np.maximum(notch, -pin)      # never carve the pin/neck
-                if i > 0:                          # ...or this segment's boss
+                # hollow out room for the next segment's shell to swing
+                cut = self._joint(jr, X, Y, Z, "relief")
+                cut = np.maximum(cut, -pin)        # never carve the ball/neck
+                if boss_own is not None:           # ...or this segment's shell
                     cut = np.maximum(cut, -boss_own)
                 seg = np.maximum(seg, -cut)
                 seg = np.minimum(seg, pin)
