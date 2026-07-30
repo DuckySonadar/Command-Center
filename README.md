@@ -285,6 +285,40 @@ warning) and `mouth.length` (mm) — and the cut always stops 2 mm above
 the build plate. `head.mouth_open` still carves an open-mouth pocket on
 top of any of them.
 
+### Segment joints
+
+Segments are linked by a **plate-cut ball and socket** — the same
+principle as the side fins. A ball on a short neck belongs to the front
+segment; the rear segment carries a spherical shell around it. There is
+no vertical post: everything is concentric on the ball centre, so there
+is no lever arm to pry a joint apart, and the shell is a sphere that
+gets clipped to the body silhouette (0.15 mm inside it) and therefore
+can never bulge out through the skin.
+
+Capture comes from the socket mouth being deliberately *narrower* than
+the ball. The mouth is a cone opened only as wide as the requested
+swing needs, so grip is usually well above the floor:
+
+| knob | default | what it does |
+|------|---------|--------------|
+| `joint_capture` | 0.20 | minimum grip as a fraction of ball radius (also never below 0.45 mm) |
+| `joint_ball_max` | 5.0 | largest ball radius, mm |
+| `joint_neck` | 0.40 | neck radius ÷ ball radius — thinner neck buys more swing |
+| `clearance` | 0.55 | printed gap (PETG ~0.55, PLA ~0.45) |
+
+Raise `joint_capture` for a stiffer link, lower `swing_front_deg` /
+`swing_rear_deg` to spend the same geometry on grip instead of travel.
+On the default fish that yields 0.56–1.46 mm of grip (22–31% of the
+ball radius) while still hitting the full requested 12–16° of swing.
+
+The ball rests on the build plate so it prints unsupported, and the
+generator guarantees **more than 80% of each ball sits above the plate**
+(typically 87–98%). Ball size is chosen by bisection against every
+constraint at once: it must fit inside the body at its own height, under
+the back, and end-to-end with the neighbouring joint's shell — that last
+one is usually what binds, so *longer segments*, not a wider body, are
+what buy bigger joints.
+
 Print notes: run `--coupon` first and print the one-joint test;
 `--preview` is for looking only (at 0.62 mm voxels the 0.55 mm joint
 clearances fuse — the STL will report fewer shells than expected).

@@ -143,7 +143,8 @@ const FIXED = {
   pupil_diameter: 4.6, dorsal_thickness: 2.8,
   pec_thickness: 3.6, pelvic_thickness: 3.4,
   tail_thick_root: 4.0, tail_thick_tip: 2.2,
-  fin_edge: 0.9, fin_fillet: 2.8
+  fin_edge: 0.9, fin_fillet: 2.8,
+  joint_ball_max: 5.0, joint_capture: 0.20, joint_neck: 0.40
 };
 
 const DEFAULT_SHAPE = {
@@ -633,45 +634,72 @@ function layout(p, S) {
   return out;
 }
 
+// plate-cut ball joint sizing -- mirrors FishBuilder._size_joints
+function ballZc(R, clearance) {
+  return Math.max(0.55 * R, Math.sqrt(2 * R * clearance) + 0.45);
+}
+function abovePlateFrac(R, zc) {
+  const h = Math.max(Math.min(R - zc, 2 * R), 0);
+  return 1 - (h * h * (3 * R - h)) / (4 * R * R * R);
+}
+function wallFor(R, p) { return Math.min(p.wall, Math.max(1.0, 0.45 * R)); }
+
 function jointNotes(p, cuts, S) {
   const notes = [], errors = [], info = [];
   const segl = [];
   for (let i = 1; i < cuts.length; i++) segl.push(cuts[i] - cuts[i - 1]);
-  const pad = p.clearance + p.wall + 2.1;
   for (let i = 0; i < cuts.length; i++) {
-    const hw = halfwidthAt(cuts[i], 5.0, S);
-    const we = Math.min(p.wall, Math.max(1.10, 0.28 * hw));
-    let r2 = Math.min(hw - 0.8 - we - p.clearance, 5.2);
-    for (const s of [i - 1, i])
-      if (s >= 0 && s < segl.length) r2 = Math.min(r2, (segl[s] - pad) / 2);
-    if (r2 < 2.0) {
-      errors.push('joint at x=' + cuts[i].toFixed(1) + " can't fit (r2=" +
-        r2.toFixed(2) + ' mm < 2.0): fewer segments, or a longer/wider fish');
+    const top = topAt(cuts[i], S);
+    const fits = R => {
+      const Rb = R + p.clearance + wallFor(R, p);
+      const zc = ballZc(R, p.clearance);
+      if (Rb > halfwidthAt(cuts[i], zc, S) - 0.7) return false;
+      if (zc + Rb > top - 0.9) return false;
+      for (const s of [i - 1, i])
+        if (s >= 0 && s < segl.length && 2 * Rb > segl[s] - 2.4) return false;
+      return true;
+    };
+    let R;
+    if (fits(p.joint_ball_max)) R = p.joint_ball_max;
+    else {
+      let lo = 0.4, hi = p.joint_ball_max;
+      for (let k = 0; k < 28; k++) {
+        const mid = 0.5 * (lo + hi);
+        if (fits(mid)) lo = mid; else hi = mid;
+      }
+      R = lo;
+    }
+    const we = wallFor(R, p);
+    if (R < 1.6) {
+      errors.push('joint at x=' + cuts[i].toFixed(1) + " can't fit (ball R=" +
+        R.toFixed(2) + ' mm < 1.6): fewer segments, or a longer/wider fish');
       continue;
     }
-    if (r2 < 2.6)
-      notes.push('joint x=' + cuts[i].toFixed(0) + ': delicate (r2=' +
-        r2.toFixed(1) + ' mm) -- handle gently');
-    const r1 = Math.max(1.7, 0.55 * r2);
-    const Rb = r2 + p.clearance + we;
+    if (R < 2.2)
+      notes.push('joint x=' + cuts[i].toFixed(0) + ': delicate (ball R=' +
+        R.toFixed(1) + ' mm) -- handle gently');
+    const zc = ballZc(R, p.clearance);
+    const rn = Math.max(1.0, p.joint_neck * R);
+    const Rb = R + p.clearance + we;
     const t = i / Math.max(cuts.length - 1, 1);
     const swReq = p.swing_front_deg +
       (p.swing_rear_deg - p.swing_front_deg) * t;
-    const wn = Math.max(2.2, 0.85 * r1);
-    let sr = (2 * r2 - 1.4 - wn - 0.7) / (2 * Rb);
-    sr = sr < 0.05 ? 0.05 : sr > 0.98 ? 0.98 : sr;
-    const swCap = Math.asin(sr) * 180 / Math.PI;
-    const sw = Math.min(swReq, swCap);
+    const cl = v => (v < 0.02 ? 0.02 : v > 0.97 ? 0.97 : v);
+    const halfNeck = Math.asin(cl(rn / R)) * 180 / Math.PI;
+    const gripMin = Math.max(p.joint_capture * R, 0.45);
+    const thMax = Math.asin(cl((R - gripMin) / (R + p.clearance))) * 180 / Math.PI;
+    const th = Math.min(swReq + halfNeck, thMax);
+    const sw = Math.max(0, th - halfNeck);
+    const grip = R - (R + p.clearance) * Math.sin(th * Math.PI / 180);
     if (sw < swReq - 0.5)
       notes.push('joint x=' + cuts[i].toFixed(0) + ': swing limited to ±' +
         sw.toFixed(0) + '° (asked ±' + swReq.toFixed(0) + '°)');
-    // full geometry for the printable plate (mirrors _size_joints)
-    const top = topAt(cuts[i], S);
-    const wslot = wn + 2 * Rb * Math.sin(sw * Math.PI / 180) + 0.7;
-    const fwd = Math.sqrt(Math.max(r2 * r2 - (wslot / 2) * (wslot / 2),
-                                   0.25)) + 1.1;
-    const Hj = Math.min(0.72 * top, top - 3.2);
-    info.push({ xa: cuts[i], r2, r1, Rb, Hj, wn, wslot, swing: sw, fwd,
+    if (grip < 0.45)
+      notes.push('joint x=' + cuts[i].toFixed(0) + ': only ' +
+        grip.toFixed(2) + ' mm of socket grip -- may pop apart easily');
+    info.push({ xa: cuts[i], R, zc, rn, Rb, swing: sw, theta: th, grip,
+                cosO: Math.cos(th * Math.PI / 180), nl: Rb + 2.2,
+                above: abovePlateFrac(R, zc),
                 tanb: Math.tan((sw / 2 + 2.0) * Math.PI / 180) });
   }
   return { notes, errors, info };
@@ -686,26 +714,29 @@ function sdBox(x, y, z, x0, x1, y0, y1, z0, z1) {
   return out + Math.min(Math.max(qx, Math.max(qy, qz)), 0);
 }
 function jointSDF(j, x, y, z, want, frontLimit, p) {
-  const pr = Math.hypot(x - j.xa, y);
-  if (want === 'pin') {
-    const pin = polySDF(j.prof, pr, z);
-    let x0 = j.xa - j.fwd - 2.1;
-    if (frontLimit != null && frontLimit > x0) x0 = frontLimit;
-    const neck = sdBox(x, y, z, x0, j.xa + 0.3, -j.wn / 2, j.wn / 2,
-                       0.0, 0.78 * j.Hj);
-    return Math.min(pin, neck);
+  // ball, socket cavity and shell are all concentric on the ball centre
+  const px = x - j.xa, pz = z - j.zc;
+  const r = Math.hypot(px, y, pz);
+  if (want === 'pin') {                        // ball + neck, front side
+    const ball = r - j.R;
+    let x0 = j.xa - j.nl;
+    if (frontLimit != null && frontLimit > x0)
+      x0 = Math.min(frontLimit, j.xa - j.R - 0.4);
+    const L = Math.max(j.xa - x0, 0.1);
+    let t = -px / L;
+    t = t < 0 ? 0 : t > 1 ? 1 : t;             // capsule toward -x
+    const neck = Math.hypot(px + L * t, y, pz) - j.rn;
+    // the ball dips below z=0 by design; the plate cut flattens its base
+    return Math.max(Math.min(ball, neck), -z);
   }
-  if (want === 'cav') {
-    const cav = polySDF(j.prof, pr, z) - p.clearance;
-    const slot = sdBox(x, y, z, j.xa - j.Rb - 2.0, j.xa,
-                       -j.wslot / 2, j.wslot / 2, -1.0, j.Hj + 0.5);
-    return Math.min(cav, slot);
+  if (want === 'cav') {                        // socket cavity + mouth
+    const sph = r - (j.R + p.clearance);
+    const mouth = Math.max(r - (j.Rb + 2.0), j.cosO * r + px);
+    return Math.min(sph, mouth);
   }
-  // boss
-  const Hb = j.Hj + p.clearance + 2.0;
-  let b = Math.max(Math.hypot(x - j.xa, y) - j.Rb, x - (j.xa + 2.0));
-  b = Math.max(b, (j.xa - j.fwd) - x);
-  return Math.max(Math.max(b, z - Hb), -z);
+  if (want === 'relief')                       // room for the shell to swing
+    return r - (j.Rb + p.clearance + 0.35);
+  return r - j.Rb;                             // spherical socket shell
 }
 const COS48 = Math.cos(48 * Math.PI / 180);
 function finCavityAt(F, x, y, z, p) {
@@ -729,28 +760,26 @@ function plateAt(x, y, z, C, bodyF) {
   const nseg = J.length + 1;
   let out = Infinity;
   for (let i = 0; i < nseg; i++) {
-    if (i > 0 && x < J[i - 1].xa - J[i - 1].fwd - 3.0) continue;
-    if (i < nseg - 1 && x > J[i].xa + J[i].r2 + p.clearance + 3.0) continue;
-    let seg = F, bossOwn = 0, frontLimit = null;
+    if (i > 0 && x < J[i - 1].xa - J[i - 1].Rb - 3.0) continue;
+    if (i < nseg - 1 && x > J[i].xa + J[i].Rb + 3.0) continue;
+    let seg = F, bossOwn = null, frontLimit = null;
     if (i > 0) {
       const jf = J[i - 1];
       seg = Math.max(seg, (jf.xa + p.face_gap / 2 + jf.tanb * ay) - x);
-      bossOwn = jointSDF(jf, x, y, z, 'boss', null, p);
+      // clipped 0.15 mm inside the body so the shell never bulges out and
+      // never lands exactly coincident with the body surface
+      bossOwn = Math.max(jointSDF(jf, x, y, z, 'boss', null, p), F + 0.15);
       seg = Math.min(seg, bossOwn);
       seg = Math.max(seg, -jointSDF(jf, x, y, z, 'cav', null, p));
-      frontLimit = jf.xa + jf.r2 + p.clearance + 0.5;
+      frontLimit = jf.xa + jf.Rb + 0.6;
     }
     if (i < nseg - 1) {
       const jr = J[i];
       seg = Math.max(seg, x - (jr.xa - p.face_gap / 2 - jr.tanb * ay));
       const pin = jointSDF(jr, x, y, z, 'pin', frontLimit, p);
-      const r = Math.hypot(x - jr.xa, y);
-      const Hb = jr.Hj + p.clearance + 2.0;
-      let notch = Math.max(r - (jr.Rb + 0.6),
-                           z - (Hb + 0.6 + (jr.Rb + 0.6 - r)));
-      notch = Math.max(notch, (jr.xa - jr.fwd - 0.6) - x);
-      let cut = Math.max(notch, -pin);
-      if (i > 0) cut = Math.max(cut, -bossOwn);
+      let cut = jointSDF(jr, x, y, z, 'relief', null, p);
+      cut = Math.max(cut, -pin);                 // never carve the ball/neck
+      if (bossOwn !== null) cut = Math.max(cut, -bossOwn);
       seg = Math.max(seg, -cut);
       seg = Math.min(seg, pin);
     }
@@ -775,13 +804,6 @@ function prepare(shape, overrides, showCuts) {
     const jn = jointNotes(p, C.cuts, S);
     C.notes = jn.notes; C.errors = C.errors.concat(jn.errors);
     C.joints = jn.info;
-    for (const j of C.joints) {          // pin cross-section polygon
-      const dr = j.r2 - j.r1, h1 = Math.max(1.8, 0.16 * j.Hj);
-      const zb0 = h1 + dr, zb1 = h1 + dr + 1.2;
-      const vr = [0, j.r1 - 0.35, j.r1, j.r1, j.r2, j.r2, j.r1, j.r1, 0];
-      const vz = [0, 0, 0.35, h1, zb0, zb1, zb1 + dr, j.Hj, j.Hj];
-      j.prof = polyPre(vr.map((r, i) => [r, vz[i]]));
-    }
   }
 
   if (S.caudal) {
