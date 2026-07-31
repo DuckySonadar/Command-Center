@@ -1,15 +1,17 @@
 """Range of motion: yaw the rear segment and find where it hits the front.
 
-The dome and the cup are concentric spheres, so the joint is a ball joint and
-its motion is a yaw about the dome centre. Rotate the rear segment's field
-about that axis and count voxels where the two segments are both solid.
+Nothing constrains the joint but the ring link, so the segments can slide as
+well as turn -- but a yaw about the vertical line through the seam is the
+motion the fish makes and the one the relief is swept for. Rotate the rear
+segment's field about that axis and count voxels where both segments are
+solid.
 
     python3 check_swing.py [joint index] [voxel size]
 
 What a healthy joint looks like: zero overlap through the design swing, and
-the first contact inside the dome -- the rings meeting each other, which is
-the end stop the design intends. Contact out on the body face instead means
-the seam wedge is closing before the linkage does.
+the first contact on the rings, which is the end stop the design intends.
+Contact out on the body face instead means the seam wedge is closing before
+the linkage does.
 """
 import importlib.util
 import os
@@ -29,6 +31,7 @@ F32 = ff.F32
 def main(argv):
     ji = int(argv[1]) if len(argv) > 1 else 0
     res = float(argv[2]) if len(argv) > 2 else 0.25
+    p_clear = ff.FishParams().clearance
     b = ff.FishBuilder(ff.FishParams())
     j = b.joints[ji]
     xa, zc, R, rt = j["xa"], j["zc"], j["R"], j["rt"]
@@ -60,11 +63,16 @@ def main(argv):
             if limit is None:
                 limit = deg
             idx = np.argwhere(ov)
-            d = np.sqrt((xs[idx[:, 0]] - xa) ** 2 + ys[idx[:, 1]] ** 2
-                        + (zs[idx[:, 2]] - zc) ** 2)
-            inside = float((d < j["dome"]).mean())
-            note = (f"{100*inside:3.0f}% inside the dome -- "
-                    + ("rings (the intended stop)" if inside > 0.5
+            # on a ring, or out on the body face? measure against the
+            # tilted ring, which is the one that reaches into the seam
+            P = np.stack([xs[idx[:, 0]], ys[idx[:, 1]], zs[idx[:, 2]]], -1)
+            dA = np.abs(ff.sd_torus(P[:, 0], P[:, 1], P[:, 2], *j["cA"],
+                                    *j["axA"], R, rt))
+            dB = np.abs(ff.sd_torus(P[:, 0], P[:, 1], P[:, 2], *j["cB"],
+                                    *j["axB"], R, rt))
+            on_ring = float((np.minimum(dA, dB) < 2 * p_clear).mean())
+            note = (f"{100*on_ring:3.0f}% on a ring -- "
+                    + ("rings (the intended stop)" if on_ring > 0.5
                        else "BODY FACE (the seam is binding first)"))
         print(f"{deg:5d} {n:9d}  {note}")
 

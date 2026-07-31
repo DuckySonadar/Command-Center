@@ -9,7 +9,9 @@ Not for merging into `main` as-is — see "what is left" at the bottom.
 
 **Status: it builds.** The fusion that blocked the last session is fixed, the
 joint meshes as separate parts at print resolution, both rings are real and
-visible, and it swings past its design range. Nothing has been printed yet.
+visible, and it swings past its design range. The linkage is the *only* thing
+holding a joint together — there is no ball, no socket, no dome. Nothing has
+been printed yet.
 
 ---
 
@@ -48,18 +50,16 @@ build plate at z = 0. "Axis" below means the torus's axis of revolution.
 
 - **Tilted ring** — axis lies in the **XZ plane**, 30° from vertical
   (equivalently: the ring's *plane* is 60° from vertical / 30° off the
-  floor). Fused into a **convex dome** on the front segment, protruding
-  rearward. Roughly a third of it stands proud of the body — the arc where
-  `sin t < −1/2`, which is where the seam plane cuts it; the rest is buried
-  in the segment. The axis tilts toward **−x**, which puts the proud arc on
-  the ring's *high* side; see "which way the ring leans" below, because the
-  other sign does not print.
-- **Vertical ring** — axis along **y** (plane XZ), recessed in a **concave
-  cup** on the rear segment. Vertical, so it prints unsupported. It stands
-  out of the cup like the handle on a mug.
-- Dome nests into cup so the linkage is hidden and only a body seam shows.
-  The dome is **smaller than the rings** — see "the dome must not swallow
-  the ring".
+  floor). Fused into the front segment and protruding rearward past the seam.
+  Roughly a third of it stands proud — the arc where `sin t < −1/2`, which is
+  where the seam plane cuts it; the rest is buried in the body. The axis
+  tilts toward **−x**, which puts the proud arc on the ring's *high* side;
+  see "which way the ring leans" below, because the other sign does not print.
+- **Vertical ring** — axis along **y** (plane XZ), fused into the rear
+  segment and protruding forward. Vertical, so it prints unsupported.
+- **The seam is a plain wedge** and nothing else. Each segment ends in a flat
+  face that opens into a V with |y|, `face_gap` apart, and the two rings
+  cross in the gap between them. See "no dome" below.
 
 ### The design rule (derived, then verified numerically to 3 decimals)
 
@@ -96,44 +96,44 @@ Verification of the formula (`verify_rule.py`):
   60        2.00         0.536      0.536    True
 ```
 
-### The dome must not swallow the ring
+### No dome
 
-`dome` used to be `R + rt + 1`, chosen to clear the ring's envelope. That is
-larger than the tilted ring's *closest approach to the dome centre*, so the
-dome ate it: the front segment came out as a solid ball with a tunnel bored
-through it, the exact negative of the rear segment, and there was no second
-ring anywhere on the model. The link was still real — but it was a hole in a
-ball, not the design.
+There used to be one: a ball on the front segment nesting into a cup on the
+rear, meant to hide the linkage and act as a second capture. It is gone. Two
+linked rings cannot come apart at any tolerance, so a second capture was
+never needed, and the ball was actively in the way.
 
-How close the tilted ring comes to the dome centre, with its centre offset
-`off/2 = R·cos(a)/2` forward:
+It was sized `R + rt + 1`, to clear the ring's envelope. But what matters is
+how close the tilted ring comes to the ball's *centre*, and with the ring
+offset `off/2 = R·cos(a)/2` forward of it:
 
 ```
 |p(t)|² = R²·[1 + cos²(a)·(sin t + 1/4)]
+
+nearest  = R·√(1 − ¾cos²a)  = 0.661·R at a = 30°
+farthest = R·√(1 + 1¼cos²a) = 1.392·R at a = 30°
 ```
 
-Linear in `sin t`, so the extremes are at `sin t = ∓1`:
+(linear in `sin t`, so the extremes are at `sin t = ∓1`; verified against
+brute force to 3 decimals for R ∈ {4, 5.42, 7}, a ∈ {0, 20, 30, 45}). At
+R = 7 the ball was 9.47 against a nearest approach of 4.63 — twice what it
+could be — so it swallowed the tilted ring whole. The front segment came out
+as a solid ball with a tunnel bored through it, the exact negative of the
+rear segment, with no second ring anywhere on the model. The link was real;
+it just was not the design.
 
-```
-nearest  = R·√(1 − ¾cos²a)     = 0.661·R at a = 30°
-farthest = R·√(1 + 1¼cos²a)    = 1.392·R at a = 30°
-```
+Shrinking it to 4.63 made the ring visible, but it was still a sphere sitting
+in the middle of the ring doing a job the ring already does. Removing it
+outright is simpler and strictly better: the seam is a plain wedge, the
+largest print island drops from 0.58 mm³ to 0.06 mm³ (the worst one *was* the
+ball's undercut lower tip), the marching-cubes specks disappear entirely, and
+about 70 s comes off the build.
 
-(verified against brute force to 3 decimals for R ∈ {4, 5.42, 7},
-a ∈ {0, 20, 30, 45}). The near extreme is on the arc that protrudes past the
-seam — the visible half — so the dome has to stop short of it. `dome` is now
-`nearest − ring_dome_sink`, with `ring_dome_sink = 0` putting the ring's
-centreline exactly on the dome surface: half buried, half proud, which is
-what "fused into the dome" should mean. For R = 7 that is a dome of 4.63 mm
-rather than 9.47.
-
-Consequence: the dome is no longer the thing that keeps the rings inside the
-body, so `fits()` has to check the **ring envelopes** directly — the vertical
-ring is the tall one (`zc ± (R + rt)`), the tilted ring is the wide one
-(`± (R + rt)` in y, at `z = zc`). Both get clipped to the skin when the plate
-is assembled and a clipped ring is a broken ring. Those checks were in the
-original code, and removing them in favour of a dome check was safe only
-while the dome was the bigger thing.
+Consequence for sizing: nothing bounds the rings but the body, so `fits()`
+checks the **ring envelopes** directly — the vertical ring is the tall one
+(`zc ± (R + rt)`), the tilted ring is the wide one (`± (R + rt)` in y, at
+`z = zc`). Both get clipped to the skin when the plate is assembled, and a
+clipped ring is a broken ring.
 
 ### Which way the ring leans
 
@@ -169,16 +169,17 @@ it is why ring-based flexi models on the internet have chunky bodies.
 
 Sizes the generator now produces on the blob fish at `n_segments = 2`:
 
-| joint x | R | tube | offset | zc | dome | cup lip (z, y) |
-|---|---|---|---|---|---|---|
-| 34.0 | 7.00 | 1.48 | 6.06 | 9.62 | 4.63 | 22.84, 13.82 |
-| 76.0 | 7.00 | 1.47 | 6.06 | 9.62 | 4.63 | 10.95, 6.97 |
-| 101.0 | 5.28 | 1.05 | 4.57 | 7.48 | 3.49 | 3.13, 3.96 |
+| joint x | R | tube | offset | zc | skin over the rings (z, y) |
+|---|---|---|---|---|---|
+| 34.0 | 7.00 | 1.48 | 6.06 | 9.62 | 19.50, 10.48 |
+| 76.0 | 7.00 | 1.47 | 6.06 | 9.62 | 7.61, 3.63 |
+| 101.0 | 5.28 | 1.05 | 4.57 | 7.48 | 0.80, 1.62 |
 
 Those tubes (1.0–1.5 mm radius) are genuinely strong — better than expected.
 The front two joints are capped by `ring_max`; the rear one is capped by the
-body, through the ring-envelope checks in `fits()`, so it is the first thing
-that gives if the body gets any slimmer.
+body, through the ring-envelope checks in `fits()` — 0.80 mm of skin over the
+top of its vertical ring — so it is the first thing that gives if the body
+gets any slimmer.
 
 ---
 
@@ -204,27 +205,29 @@ python3 v2.py               # the "no fit" negative result, for context
 python3 check_joints.py     # every joint of the default fish  (<1 s)
 python3 check_swing.py 1    # range of motion at the middle joint  (~11 s)
 python3 check_print.py 1    # islands at the middle joint  (~10 s)
-python3 flexifish_rings_WIP.py --out rings.stl --coupon   # ~5 min
+python3 flexifish_rings_WIP.py --out rings.stl --coupon   # ~3.5 min
 ```
 
 Current results:
 
 ```
 check_joints.py   all joints pass (linked, sep matches rule to 3 dp,
-                  surface gap 0.550 = clearance, ~11700 disk samples of
-                  front material inside the rear ring)
+                  surface gap 0.550 = clearance, front-segment material
+                  through the rear ring's hole)
 check_swing.py    clear through 14 deg at every joint, first contact at
-                  16-20 deg and always at the rings; design asks +/-6 to 8
-check_print.py    largest island 0.58 mm3, at the dome's lower tip where
-                  the vertical ring's tunnel undercuts it -- one layer of
-                  droop that the layers above close over
-rings.stl         619552 tris, manifold, shells = 8 (expected 8)
-rings_joint_test  108112 tris, manifold, shells = 2 (expected 2)
+                  16-20 deg; design asks +/-6 to 8
+check_print.py    largest island 0.06 mm3 -- a couple of voxels
+coupon shells     2 at every joint, at 0.30 / 0.20 / 0.16 mm, no specks
+rings.stl         614946 tris, manifold, shells = 8 (expected 8)
+rings_joint_test  106344 tris, manifold, shells = 2 (expected 2)
 ```
 
 ---
 
 ## The fusion, and what it actually was
+
+Historical, and kept because the *method* is the reusable part. All of this
+happened while the dome still existed.
 
 Last session's coupon came out as one welded blob and the note here blamed
 the ring relief channel through the dome. **That was wrong.** Two segments'
@@ -239,11 +242,12 @@ lip met in a knife edge around the entire rim circle. Voxel-adjacency found
 it immediately: touching voxels at x 76.6–78.25, spanning y ±9.5 and z 0–18.5
 — exactly the circle of radius `dome` = 9.47 centred on the joint axis.
 
-The fix is to make the face a real distance field: `min(wedge, ball)`, where
-`ball` is the dome sphere and `wedge` is the seam plane outside it. Offsetting
-that by ±`face_gap/2` gives a gap measured perpendicular to the surface, which
-is the same everywhere. Shells went from one to two at every resolution
-tested, 0.30 down to 0.12 mm.
+The fix was to make the face a real distance field — `min(wedge, ball)` at
+the time, just `wedge` now that the ball is gone — so that offsetting it by
+±`face_gap/2` gives a gap measured perpendicular to the surface, the same
+everywhere. Shells went from one to two at every resolution tested, 0.30 down
+to 0.12 mm. The general lesson outlives the dome: **a field you offset has to
+be a distance, or the gap you think you asked for is not the gap you get.**
 
 Three more things were wrong underneath it, all found the same way:
 
@@ -252,37 +256,35 @@ Three more things were wrong underneath it, all found the same way:
    `R + rt + clearance + 0.6`.
 2. **The cup lip ran tangent to the skin.** `fits()` checked the ring
    envelope against the body but not the *dome*, so the cup could surface at
-   a glancing angle and end in a knife edge. It now requires a millimetre of
-   body wall outside the cup, in both z and y. This is what dropped the rear
-   joint from R=5.42 to R=4.60.
+   a glancing angle and end in a knife edge. Moot now — no cup — but it is
+   why `fits()` grew, and shrank again, and ended up back on the ring
+   envelopes it started with.
 3. **The seam wedge had the same tilt on both sides**, which is a parallel
    gap, not a V. The rear swept straight into the front on whichever side it
    turned toward. The two faces need opposite tilts — `faceF` and `faceR`.
 
-Sub-voxel specks are still produced where the relief tunnel leaves the dome
-at a glancing angle: the two surfaces cross in a feather edge thinner than a
-voxel and marching cubes turns stray samples into lone octahedra. They are
-smaller than a nozzle. `drop_debris` removes anything under four voxels
-across, which is what makes the shell count readable again.
+Sub-voxel specks were produced where the relief tunnel left the dome at a
+glancing angle: the two surfaces crossed in a feather edge thinner than a
+voxel and marching cubes turned stray samples into lone octahedra. Removing
+the dome removed them — the coupon is clean at 0.30, 0.20 and 0.16 mm.
+`drop_debris` is still there and still worth keeping, because the shell count
+is only a useful check if a stray octahedron cannot break it.
 
 ## Range of motion, and the relief sweep
 
-The other open question was whether the dome's centre being somewhere other
-than the linkage would fight the joint. It does not — and the reason is worth
-writing down, because it is the nicest property this design has:
-
-**The dome and the cup are concentric spheres, so the joint is a ball joint,
-and its motion is a yaw about the dome centre. The ring pair barely notices
-that motion.** Measured centreline separation under yaw about the dome
-centre:
+The other open question was whether the linkage would fight a yaw about the
+seam — the motion the fish actually makes. It does not, and it is the nicest
+property the design has. Measured centreline separation under that yaw:
 
 ```
 yaw     0     4     8    12    16    20 deg
 sep  3.50  3.50  3.50  3.51  3.52  3.53 mm
 ```
 
-0.03 mm of variation over 20°. The rings and the ball joint want the same
-motion, so there is nothing to reconcile.
+0.03 mm of variation over 20°. Whatever else the pair does, turning is free.
+(This was originally the argument that the dome and the rings were compatible
+constraints. With the dome gone it is simply why the swept relief below can be
+a pure yaw: nothing else needs modelling.)
 
 What was actually stopping it: the relief carved for the neighbouring ring
 was a constant `clearance` offset around where that ring **sits**. The ring
@@ -303,18 +305,17 @@ wants.
 - The overhang audit is now `check_print.py`, and it passes, but it only
   looks at the joint coupon. The fins, the eyes and the caudal fan have never
   been through it.
-- One island is left: 0.58 mm³ at the dome's lower tip, where the vertical
-  ring's relief tunnel undercuts it and the face gap separates it from the
-  body. One layer, and the layers above close over it, so it should read as a
-  small droop rather than a defect — but it would go away if the dome's tip
-  were trimmed where the tunnel passes under it.
 - The proud arc of the tilted ring is a shallow arch. `check_print.py` says
   it is anchored, not floating, but "anchored" is not "prints cleanly" —
   around 70% layer-to-layer overlap at the shallowest point. This is the most
   likely thing to look bad on the first print.
-- The seam is now a visible V-groove, same as the ball-joint fish. The dome
-  hides the linkage but not the wedge. If that reads badly on a print, the
-  wedge can be narrowed to `swing/2` exactly (it carries 2° of margin).
+- The seam is a visible V-groove and the rings show through it. Nothing hides
+  the linkage any more; whether that reads as mechanical or as part of the toy
+  is a call to make on a print, not on a render.
+- The joint has slop. Only the rings hold the segments together, so a segment
+  can be pulled back until the rings tighten and pushed forward until the
+  faces meet — roughly `face_gap` of travel. Normal for a linked-ring flexi,
+  and the trade the ball joint used to hide, but it will rattle.
 - Segment-count defaults: the blob fish needs `n_segments` 5 → 2 (done in
   this file); the NURBS fish needs `tail_segments` 3 → 2 (its 34.3 mm tail
   region gives 17.2 mm segments, which fits) — not done.
@@ -324,6 +325,6 @@ wants.
   patterns described in the main README).
 - The ball-joint knobs (`joint_capture`, `joint_ball_max`, `joint_neck`)
   become dead once rings land; remove them then, not before.
-- Build time is 4 min at `res = 0.30`, up from 2.5 min — the swept relief
-  costs ~25 extra full-grid torus evaluations. Restricting the sweep to a
-  box around each joint would get most of that back.
+- Build time is 3.5 min at `res = 0.30`, up from 2.5 min before the swept
+  relief, which costs ~25 extra full-grid torus evaluations. Restricting the
+  sweep to a box around each joint would get most of that back.

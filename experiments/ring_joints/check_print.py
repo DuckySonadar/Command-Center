@@ -57,7 +57,7 @@ def main(argv):
     solid = vol < 0
 
     print(f"joint {ji} at x={j['xa']:.1f}, res={res} mm, "
-          f"R={j['R']:.2f} tube={j['rt']:.2f} dome={j['dome']:.2f}")
+          f"R={j['R']:.2f} tube={j['rt']:.2f}")
     print(f"{'z':>7} {'volume':>9}  segment  where")
     st = ndimage.generate_binary_structure(2, 2)
     worst = 0.0

@@ -27,14 +27,17 @@ def pierces(b, ji, n=140):
     """Does the front segment's *solid* thread the rear segment's ring?
 
     The centreline test below is about two ideal tori. What actually gets
-    printed is not that: `dome` is bigger than R + rt, so the tilted ring ends
-    up buried inside a solid dome, and the linkage is carried by a tunnel
-    bored through that dome rather than by a visible second ring. Which is
-    fine -- more material, not less -- but it means the centreline test would
-    still pass if the dome had swallowed the linkage whole. So check the
-    field: front-segment material inside the rear ring's hole, front-segment
-    material outside the rear ring entirely, and one connected piece joining
-    them, is a link that cannot be pulled apart.
+    printed is not that -- the rings are unioned into bodies, clipped to the
+    skin, and relieved for each other, and any of those could in principle
+    break a loop or fill a hole without the centreline test noticing. So check
+    the field instead: front-segment material inside the rear ring's hole,
+    front-segment material outside the rear ring entirely, and one connected
+    piece joining them, is a link that cannot be pulled apart.
+
+    This is also the check that would have caught the dome, back when there
+    was one: it was bigger than the tilted ring, so the front segment was a
+    solid ball with a tunnel through it and there was no second ring at all.
+    The link was real; it just was not the design.
     """
     j = b.joints[ji]
     R, rt = j["R"], j["rt"]
@@ -76,19 +79,18 @@ def main(argv):
     for w in b.warnings:
         print("note:", w)
 
-    print(f"{'x':>7} {'R':>6} {'tube':>6} {'offset':>7} {'zc':>6} {'dome':>6} "
-          f"{'sep':>7} {'surf gap':>9} {'floor':>6} {'lip z':>6} {'lip y':>6} "
-          f"linked")
+    print(f"{'x':>7} {'R':>6} {'tube':>6} {'offset':>7} {'zc':>6} {'sep':>7} "
+          f"{'surf gap':>9} {'floor':>6} {'skin z':>7} {'skin y':>7} linked")
     bad = 0
     for ji, j in enumerate(b.joints):
         sep = centreline_gap(j)
         surf = sep - 2 * j["rt"]                       # metal-to-metal gap
-        # material left under the *other* ring's relief carve, and body wall
-        # left outside the cup, which is the dome ball grown by face_gap/2
+        # material left under the *other* ring's relief carve, and the skin
+        # left over each ring -- a ring clipped by the body is a broken ring
         floor = j["zc"] - j["R"] - j["rt"] - p.clearance
         top = b.top_at(j["xa"])
-        lip_z = top - (j["zc"] + j["dome"] + p.face_gap / 2)
-        lip_y = b.halfwidth_at(j["xa"], j["zc"]) - (j["dome"] + p.face_gap / 2)
+        skin_z = top - (j["zc"] + j["R"] + j["rt"])
+        skin_y = b.halfwidth_at(j["xa"], j["zc"]) - (j["R"] + j["rt"])
         ok1, n1 = linked(np.array(j["cA"]), np.array(j["axA"]), j["R"],
                          np.array(j["cB"]), np.array(j["axB"]), j["R"])
         ok2, n2 = linked(np.array(j["cB"]), np.array(j["axB"]), j["R"],
@@ -96,9 +98,8 @@ def main(argv):
         ok = ok1 and ok2
         thru, outside = pierces(b, ji)
         print(f"{j['xa']:7.1f} {j['R']:6.2f} {j['rt']:6.2f} {j['off']:7.2f} "
-              f"{j['zc']:6.2f} {j['dome']:6.2f} {sep:7.3f} {surf:9.3f} "
-              f"{floor:6.2f} {lip_z:6.2f} {lip_y:6.2f}  {ok} ({n1},{n2})"
-              f"  through={thru}")
+              f"{j['zc']:6.2f} {sep:7.3f} {surf:9.3f} {floor:6.2f} "
+              f"{skin_z:7.2f} {skin_y:7.2f}  {ok} ({n1},{n2})  through={thru}")
         # the rule predicts sep = R*(1 - sin a) at off = R*cos a
         pred = j["R"] * (1 - np.sin(np.deg2rad(p.ring_axis_deg)))
         for name, got, want in (("linked", ok, True),
@@ -106,8 +107,10 @@ def main(argv):
                                 ("surface gap >= clearance",
                                  surf > p.clearance - 1e-3, True),
                                 ("floor under relief >= 0.5", floor > 0.5, True),
-                                ("cup lip in z >= 0.9", lip_z > 0.9, True),
-                                ("cup lip in y >= 0.9", lip_y > 0.9, True),
+                                ("skin over the rings in z >= 0.7",
+                                 skin_z > 0.7, True),
+                                ("skin over the rings in y >= 0.7",
+                                 skin_y > 0.7, True),
                                 ("tube >= ring_tube_min",
                                  j["rt"] >= p.ring_tube_min, True),
                                 ("front segment threads the rear ring",
