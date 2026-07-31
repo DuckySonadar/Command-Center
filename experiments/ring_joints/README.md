@@ -78,7 +78,7 @@ If "60°" had meant the *axis* at 60° from vertical, the tube maxes out at
 0.06 mm. So the only physically viable reading is the ring **plane** at 60°
 from vertical, i.e. `ring_axis_deg = 30`.
 
-Verification of the formula (`v2.py`):
+Verification of the formula (`verify_rule.py`):
 
 ```
    a  off=Rcos a  measured sep  predicted  linked
