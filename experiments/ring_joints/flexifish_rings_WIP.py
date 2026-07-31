@@ -76,7 +76,13 @@ class FishParams:
     ring_axis_deg: float = 30.0        # tilted ring axis from vertical (XZ)
     ring_tube_min: float = 0.70        # thinnest acceptable tube radius
     ring_max: float = 7.0              # largest ring centreline radius
-    ring_dome_pad: float = 1.0         # dome radius beyond the ring envelope
+    # How deep the tilted ring sits in the dome where the two are closest.
+    # 0 puts the ring's centreline on the dome surface -- half buried, half
+    # proud, which is what "fused into the dome" means. Raising it sinks the
+    # ring; past `ring_tube_min` the dome starts swallowing it, and at the
+    # old `dome = R + rt + 1` the ring vanished completely and the joint
+    # became a tunnel bored through a solid ball.
+    ring_dome_sink: float = 0.0
 
     # ---- legacy ball-joint knobs (unused by the ring linkage) ----------
     # The socket mouth is a cone whose aperture is deliberately NARROWER
@@ -381,9 +387,19 @@ class FishBuilder:
         `fits()` and the accepted joint must agree exactly -- when they did
         not, the search approved sizes the build then rejected."""
         p = self.p
+        ca = np.cos(np.deg2rad(p.ring_axis_deg))
         r = self._ring_tube(R, p.ring_axis_deg, p.clearance)
-        off = R * np.cos(np.deg2rad(p.ring_axis_deg))
-        dome = R + r + p.ring_dome_pad
+        off = R * ca
+        # How close the tilted ring's centreline comes to the dome centre.
+        # Parametrising the ring by t, with the centre offset off/2 = R*cos(a)/2
+        # forward of the dome centre,
+        #     |p(t)|^2 = R^2 * [1 + cos^2(a) * (sin t + 1/4)]
+        # which is linear in sin t, so the extremes are at sin t = -/+1. The
+        # near one is the arc that protrudes past the seam -- the visible half
+        # of the ring -- so the dome has to stop short of it or there is no
+        # ring to see, only a hole through a ball.
+        near = R * np.sqrt(1.0 - 0.75 * ca * ca)
+        dome = near - p.ring_dome_sink
         # Ring height above the plate. The *other* segment's ring is carved
         # out of this one with `clearance` of relief, so the floor left under
         # that carve is (zc - R - r - clearance); keep 0.6 mm of it or the
@@ -401,12 +417,24 @@ class FishBuilder:
         ca, sa = np.cos(np.deg2rad(a)), np.sin(np.deg2rad(a))
         self.joints = []
         for i, xa in enumerate(cuts):
-            # Largest ring pair that fits: the linkage spans
-            # off + 2(R+r) along the body, its dome rim must sit inside the
-            # section, and the rings must clear the build plate.
+            # Largest ring pair that fits: the linkage spans off + 2(R+r)
+            # along the body, both rings have to sit inside the section with
+            # skin left over them, the cup lip needs a wall, and the rings
+            # must clear the build plate.
             def fits(R):
                 r, off, dome, zc = self._ring_layout(R)
                 if r < p.ring_tube_min:
+                    return False
+                # Ring envelopes. The vertical ring is the tall one (it
+                # reaches zc +/- (R + r)); the tilted ring is the wide one
+                # (+/- (R + r) in y, at z = zc, which is the body's widest
+                # height). Both are clipped to the skin when the plate is
+                # assembled, and a clipped ring is a broken ring, so they have
+                # to fit with room to spare -- this is the constraint the dome
+                # used to stand in for, back when it was bigger than they are.
+                if zc + R + r > top[i] - 0.8:
+                    return False
+                if R + r > self.halfwidth_at(xa, zc) - 0.8:
                     return False
                 # The cup is the dome ball grown by face_gap/2, so what is
                 # left of the rear segment outside it is the body wall. Keep
@@ -453,8 +481,21 @@ class FishBuilder:
                 xa=float(xa), top=top[i], R=float(R), rt=float(r),
                 off=float(off), zc=float(zc), dome=float(dome),
                 swing=float(sw),
-                # tilted ring: axis in XZ, `a` from vertical; sits forward
-                axA=(float(sa), 0.0, float(ca)),
+                # Tilted ring: axis in XZ, `a` from vertical; sits forward.
+                #
+                # The sign of the x component decides which half of the ring
+                # is the half that protrudes past the seam, and it is not a
+                # free choice. Mirroring x swaps the two rings' positions, and
+                # the vertical ring is symmetric about its own centre, so both
+                # signs give an identical link and an identical separation --
+                # but only one of them prints. With +sa the protruding arc is
+                # the ring's *low* half, and its bottom (z = zc - R sin a - rt)
+                # sits out past the seam face with nothing under it: the
+                # printer would have to start it in mid-air. With -sa the
+                # protruding arc is the high half, springing from the body at
+                # z = zc + R sin a / 2 and arching up. Same ring, same joint,
+                # supported instead of floating.
+                axA=(float(-sa), 0.0, float(ca)),
                 cA=(float(xa - off / 2), 0.0, float(zc)),
                 # vertical ring: axis along Y; sits aft
                 axB=(0.0, 1.0, 0.0),
@@ -949,7 +990,7 @@ def main(argv=None):
         cv, cf = mesh(b, res, side_fins=False, box=(
             mid["xa"] - reach - 2.0, mid["xa"] + reach + 2.0,
             -(mid["R"] + mid["rt"] + 2.5), mid["R"] + mid["rt"] + 2.5,
-            0.0, mid["zc"] + mid["dome"] + 2.5))
+            0.0, mid["zc"] + mid["R"] + mid["rt"] + 2.5))
         cv, cf, _ = drop_debris(cv, cf, res)
         cp = args.out.replace(".stl", "") + "_joint_test.stl"
         write_stl(cp, cv, cf)

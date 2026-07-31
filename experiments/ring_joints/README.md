@@ -8,8 +8,8 @@ Branch: `claude/ring-joints-wip`, based on `9302e59` (ball joints).
 Not for merging into `main` as-is — see "what is left" at the bottom.
 
 **Status: it builds.** The fusion that blocked the last session is fixed, the
-joint meshes as separate parts at print resolution, and it swings past its
-design range. Nothing has been printed yet.
+joint meshes as separate parts at print resolution, both rings are real and
+visible, and it swings past its design range. Nothing has been printed yet.
 
 ---
 
@@ -49,12 +49,17 @@ build plate at z = 0. "Axis" below means the torus's axis of revolution.
 - **Tilted ring** — axis lies in the **XZ plane**, 30° from vertical
   (equivalently: the ring's *plane* is 60° from vertical / 30° off the
   floor). Fused into a **convex dome** on the front segment, protruding
-  rearward. Being nearly flat it cannot print floating — the dome is what
-  supports it. Only a thin rim on its underside sits at the steep angle;
-  the rest of the torus curves away and is shallower.
+  rearward. Roughly a third of it stands proud of the body — the arc where
+  `sin t < −1/2`, which is where the seam plane cuts it; the rest is buried
+  in the segment. The axis tilts toward **−x**, which puts the proud arc on
+  the ring's *high* side; see "which way the ring leans" below, because the
+  other sign does not print.
 - **Vertical ring** — axis along **y** (plane XZ), recessed in a **concave
-  cup** on the rear segment. Vertical, so it prints unsupported.
+  cup** on the rear segment. Vertical, so it prints unsupported. It stands
+  out of the cup like the handle on a mug.
 - Dome nests into cup so the linkage is hidden and only a body seam shows.
+  The dome is **smaller than the rings** — see "the dome must not swallow
+  the ring".
 
 ### The design rule (derived, then verified numerically to 3 decimals)
 
@@ -91,22 +96,68 @@ Verification of the formula (`verify_rule.py`):
   60        2.00         0.536      0.536    True
 ```
 
-### What actually gets printed is not two rings
+### The dome must not swallow the ring
 
-Worth knowing before reading any further, because it changes what the tube
-figures above are *for*. `dome` is `R + rt + ring_dome_pad`, which is larger
-than the tilted ring's own envelope, so **the tilted ring ends up buried
-inside a solid dome**. What threads the vertical ring is a tunnel bored
-through that dome — the swept relief — not a visible second ring.
+`dome` used to be `R + rt + 1`, chosen to clear the ring's envelope. That is
+larger than the tilted ring's *closest approach to the dome centre*, so the
+dome ate it: the front segment came out as a solid ball with a tunnel bored
+through it, the exact negative of the rear segment, and there was no second
+ring anywhere on the model. The link was still real — but it was a hole in a
+ball, not the design.
 
-The link is real and it is what `check_joints.py` verifies: front-segment
-material sits inside the vertical ring's hole, the same connected piece also
-sits outside the ring, so it cannot be pulled off. Mechanically this is
-*better* than two thin rings, because the tunnel wall is far thicker than a
-0.97 mm tube. But it means the tube-radius rule is really sizing the vertical
-ring (which is genuinely free-standing, a handle sticking out of the cup) and
-setting the dome's scale, not sizing the thing that carries the load on the
-front side.
+How close the tilted ring comes to the dome centre, with its centre offset
+`off/2 = R·cos(a)/2` forward:
+
+```
+|p(t)|² = R²·[1 + cos²(a)·(sin t + 1/4)]
+```
+
+Linear in `sin t`, so the extremes are at `sin t = ∓1`:
+
+```
+nearest  = R·√(1 − ¾cos²a)     = 0.661·R at a = 30°
+farthest = R·√(1 + 1¼cos²a)    = 1.392·R at a = 30°
+```
+
+(verified against brute force to 3 decimals for R ∈ {4, 5.42, 7},
+a ∈ {0, 20, 30, 45}). The near extreme is on the arc that protrudes past the
+seam — the visible half — so the dome has to stop short of it. `dome` is now
+`nearest − ring_dome_sink`, with `ring_dome_sink = 0` putting the ring's
+centreline exactly on the dome surface: half buried, half proud, which is
+what "fused into the dome" should mean. For R = 7 that is a dome of 4.63 mm
+rather than 9.47.
+
+Consequence: the dome is no longer the thing that keeps the rings inside the
+body, so `fits()` has to check the **ring envelopes** directly — the vertical
+ring is the tall one (`zc ± (R + rt)`), the tilted ring is the wide one
+(`± (R + rt)` in y, at `z = zc`). Both get clipped to the skin when the plate
+is assembled and a clipped ring is a broken ring. Those checks were in the
+original code, and removing them in favour of a dome check was safe only
+while the dome was the bigger thing.
+
+### Which way the ring leans
+
+The tilted ring's axis can lean toward +x or −x. Mirroring x swaps the two
+rings' positions, and the vertical ring is symmetric about its own centre, so
+**both signs give an identical link and an identical centreline separation**
+— `check_joints.py` prints the same numbers either way. Only one of them
+prints.
+
+The seam cuts the tilted ring at `sin t = −1/2`, so the protruding arc is the
+`sin t < −1/2` third. With the axis toward **+x** that arc is the ring's low
+half: it springs from the body face at `z = zc − R·sin(a)/2` and dips to
+`zc − R·sin(a) − rt`, out past the seam with nothing beneath it. The printer
+would have to start it in mid-air — `check_print.py` finds it as a 0.34 mm³
+island at z = 4.70.
+
+With the axis toward **−x** the same arc is the high half: it springs from
+the body at `z = zc + R·sin(a)/2` and arches upward. The island is gone, and
+the shallowest part of it steps about 0.8 mm horizontally per 0.2 mm layer
+against a 2.9 mm tube — roughly 70% overlap layer to layer, which prints.
+
+Same ring, same joint, same everything except supported instead of floating.
+`ring_axis_deg` is still 30; it is the sign of the axis's x component that
+matters, and it lives in `_size_joints`.
 
 ### Sizing consequence — read this before changing segment counts
 
@@ -120,13 +171,14 @@ Sizes the generator now produces on the blob fish at `n_segments = 2`:
 
 | joint x | R | tube | offset | zc | dome | cup lip (z, y) |
 |---|---|---|---|---|---|---|
-| 34.0 | 7.00 | 1.48 | 6.06 | 9.62 | 9.47 | 18.00, 8.98 |
-| 76.0 | 7.00 | 1.47 | 6.06 | 9.62 | 9.47 | 6.11, 2.13 |
-| 101.0 | 4.60 | 0.88 | 3.98 | 6.63 | 6.48 | 1.00, 1.13 |
+| 34.0 | 7.00 | 1.48 | 6.06 | 9.62 | 4.63 | 22.84, 13.82 |
+| 76.0 | 7.00 | 1.47 | 6.06 | 9.62 | 4.63 | 10.95, 6.97 |
+| 101.0 | 5.28 | 1.05 | 4.57 | 7.48 | 3.49 | 3.13, 3.96 |
 
-Those tubes (0.9–1.5 mm radius) are genuinely strong — better than expected.
-The rear joint is the tight one; it is pinned by the cup lip minimum, so it
-is the first thing that gives if the body gets any slimmer.
+Those tubes (1.0–1.5 mm radius) are genuinely strong — better than expected.
+The front two joints are capped by `ring_max`; the rear one is capped by the
+body, through the ring-envelope checks in `fits()`, so it is the first thing
+that gives if the body gets any slimmer.
 
 ---
 
@@ -139,6 +191,7 @@ is the first thing that gives if the body gets any slimmer.
 | `v2.py` | search for a viable (R, tube, offset) at `r = 0.34R`. Prints "no fit" at every tilt — that negative result is what forced the closed-form derivation, since a 34%-of-R tube is far too thick for this configuration |
 | `check_joints.py` | **the joints the generator actually sizes**: linked, clearances, floor and lip thicknesses, and the pierce test on the built field |
 | `check_swing.py` | **range of motion**: yaws the rear segment and reports where it first touches, and whether the stop is the rings or the seam |
+| `check_print.py` | **island check**: walks the coupon layer by layer looking for material that starts in mid-air. This is the long-deferred overhang audit, and it is what caught the ring leaning the wrong way |
 | `flexifish_rings_WIP.py` | full `flexifish.py` with rings swapped in |
 | `flexifish_rings.diff` | that same work as a unified diff against this branch's `flexifish.py` |
 | `ring_pair.stl` / `.png` | a standalone linked pair, meshed and verified as 2 manifold shells. Printable on its own as a feel test |
@@ -150,19 +203,23 @@ python3 verify_rule.py      # closed form vs measurement, + the tube table
 python3 v2.py               # the "no fit" negative result, for context
 python3 check_joints.py     # every joint of the default fish  (<1 s)
 python3 check_swing.py 1    # range of motion at the middle joint  (~11 s)
-python3 flexifish_rings_WIP.py --out rings.stl --coupon   # ~4 min
+python3 check_print.py 1    # islands at the middle joint  (~10 s)
+python3 flexifish_rings_WIP.py --out rings.stl --coupon   # ~5 min
 ```
 
 Current results:
 
 ```
 check_joints.py   all joints pass (linked, sep matches rule to 3 dp,
-                  surface gap 0.550 = clearance, through = 17780 disk
-                  samples of front material inside the rear ring)
-check_swing.py    clear through 12 deg at every joint, first contact at
-                  14 deg and always at the rings; design asks +/-6 to 8
-rings.stl         666028 tris, manifold, shells = 8 (expected 8)
-rings_joint_test  130618 tris, manifold, shells = 2 (expected 2)
+                  surface gap 0.550 = clearance, ~11700 disk samples of
+                  front material inside the rear ring)
+check_swing.py    clear through 14 deg at every joint, first contact at
+                  16-20 deg and always at the rings; design asks +/-6 to 8
+check_print.py    largest island 0.58 mm3, at the dome's lower tip where
+                  the vertical ring's tunnel undercuts it -- one layer of
+                  droop that the layers above close over
+rings.stl         619552 tris, manifold, shells = 8 (expected 8)
+rings_joint_test  108112 tris, manifold, shells = 2 (expected 2)
 ```
 
 ---
@@ -243,9 +300,18 @@ wants.
 - **Nothing has been printed.** Print `rings_joint_test.stl` before trusting
   any of this. The whole design rests on 0.55 mm gaps resolving on a real
   printer, and no amount of field probing substitutes for that.
-- Overhang audit on the tilted ring's underside rim — still not done. It is
-  buried in the dome now, which probably makes it moot, but the dome's own
-  underside and the cup's ceiling have not been checked.
+- The overhang audit is now `check_print.py`, and it passes, but it only
+  looks at the joint coupon. The fins, the eyes and the caudal fan have never
+  been through it.
+- One island is left: 0.58 mm³ at the dome's lower tip, where the vertical
+  ring's relief tunnel undercuts it and the face gap separates it from the
+  body. One layer, and the layers above close over it, so it should read as a
+  small droop rather than a defect — but it would go away if the dome's tip
+  were trimmed where the tunnel passes under it.
+- The proud arc of the tilted ring is a shallow arch. `check_print.py` says
+  it is anchored, not floating, but "anchored" is not "prints cleanly" —
+  around 70% layer-to-layer overlap at the shallowest point. This is the most
+  likely thing to look bad on the first print.
 - The seam is now a visible V-groove, same as the ball-joint fish. The dome
   hides the linkage but not the wedge. If that reads badly on a print, the
   wedge can be narrowed to `swing/2` exactly (it carries 2° of margin).

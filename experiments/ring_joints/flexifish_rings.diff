@@ -1,5 +1,5 @@
 --- flexifish.py	2026-07-31 00:20:27.173021082 +0000
-+++ experiments/ring_joints/flexifish_rings_WIP.py	2026-07-31 14:07:51.804561010 +0000
++++ experiments/ring_joints/flexifish_rings_WIP.py	2026-07-31 22:44:30.391576312 +0000
 @@ -54,7 +54,7 @@
                                         # plate before the z=0 cut (bigger = wider flat belly)
  
@@ -9,7 +9,7 @@
      head_length: float = 34.0          # nose -> first joint
      tail_root_len: float = 12.0        # solid peduncle length ahead of the caudal fin
      swing_front_deg: float = 16.0      # per-joint swing at the front...
-@@ -64,7 +64,21 @@
+@@ -64,7 +64,27 @@
      wall: float = 1.6                  # socket wall thickness
      min_seg_len: float = 6.0           # refuse to make segments shorter than this
  
@@ -26,13 +26,19 @@
 +    ring_axis_deg: float = 30.0        # tilted ring axis from vertical (XZ)
 +    ring_tube_min: float = 0.70        # thinnest acceptable tube radius
 +    ring_max: float = 7.0              # largest ring centreline radius
-+    ring_dome_pad: float = 1.0         # dome radius beyond the ring envelope
++    # How deep the tilted ring sits in the dome where the two are closest.
++    # 0 puts the ring's centreline on the dome surface -- half buried, half
++    # proud, which is what "fused into the dome" means. Raising it sinks the
++    # ring; past `ring_tube_min` the dome starts swallowing it, and at the
++    # old `dome = R + rt + 1` the ring vanished completely and the joint
++    # became a tunnel bored through a solid ball.
++    ring_dome_sink: float = 0.0
 +
 +    # ---- legacy ball-joint knobs (unused by the ring linkage) ----------
      # The socket mouth is a cone whose aperture is deliberately NARROWER
      # than the ball: `joint_capture` is that interference as a fraction of
      # the ball radius. It is what makes a joint pop apart only under real
-@@ -186,6 +200,16 @@
+@@ -186,6 +206,16 @@
      return (np.sqrt((X - cx) ** 2 + (Y - cy) ** 2) - r).astype(F32)
  
  
@@ -49,7 +55,7 @@
  def sd_polygon(vr, vz, pr, pz):
      """2D polygon SDF (Inigo Quilez formulation), vectorized."""
      n = len(vr)
-@@ -344,9 +368,28 @@
+@@ -344,9 +374,38 @@
          h = max(min(R - zc, 2 * R), 0.0)          # spherical cap below z = 0
          return 1.0 - (h * h * (3 * R - h)) / (4 * R ** 3)
  
@@ -69,9 +75,19 @@
 +        `fits()` and the accepted joint must agree exactly -- when they did
 +        not, the search approved sizes the build then rejected."""
 +        p = self.p
++        ca = np.cos(np.deg2rad(p.ring_axis_deg))
 +        r = self._ring_tube(R, p.ring_axis_deg, p.clearance)
-+        off = R * np.cos(np.deg2rad(p.ring_axis_deg))
-+        dome = R + r + p.ring_dome_pad
++        off = R * ca
++        # How close the tilted ring's centreline comes to the dome centre.
++        # Parametrising the ring by t, with the centre offset off/2 = R*cos(a)/2
++        # forward of the dome centre,
++        #     |p(t)|^2 = R^2 * [1 + cos^2(a) * (sin t + 1/4)]
++        # which is linear in sin t, so the extremes are at sin t = -/+1. The
++        # near one is the arc that protrudes past the seam -- the visible half
++        # of the ring -- so the dome has to stop short of it or there is no
++        # ring to see, only a hole through a ball.
++        near = R * np.sqrt(1.0 - 0.75 * ca * ca)
++        dome = near - p.ring_dome_sink
 +        # Ring height above the plate. The *other* segment's ring is carved
 +        # out of this one with `clearance` of relief, so the floor left under
 +        # that carve is (zc - R - r - clearance); keep 0.6 mm of it or the
@@ -81,7 +97,7 @@
  
      def _size_joints(self):
          p = self.p
-@@ -354,80 +397,69 @@
+@@ -354,80 +413,94 @@
          segl = np.diff(cuts)
          n = len(cuts)
          top = [self.top_at(x) for x in cuts]
@@ -92,15 +108,31 @@
 -            # Largest ball whose shell fits inside the body at its own
 -            # height, under the back, and end-to-end with the neighbouring
 -            # joint's shell. Every term depends on R, so bisect.
-+            # Largest ring pair that fits: the linkage spans
-+            # off + 2(R+r) along the body, its dome rim must sit inside the
-+            # section, and the rings must clear the build plate.
++            # Largest ring pair that fits: the linkage spans off + 2(R+r)
++            # along the body, both rings have to sit inside the section with
++            # skin left over them, the cup lip needs a wall, and the rings
++            # must clear the build plate.
              def fits(R):
 -                Rb = R + p.clearance + self._wall_for(R)
 -                zc = self._ball_zc(R, p.clearance)
 -                if Rb > self.halfwidth_at(xa, zc) - 0.7:
 +                r, off, dome, zc = self._ring_layout(R)
 +                if r < p.ring_tube_min:
+                     return False
+-                if zc + Rb > top[i] - 0.9:
++                # Ring envelopes. The vertical ring is the tall one (it
++                # reaches zc +/- (R + r)); the tilted ring is the wide one
++                # (+/- (R + r) in y, at z = zc, which is the body's widest
++                # height). Both are clipped to the skin when the plate is
++                # assembled, and a clipped ring is a broken ring, so they have
++                # to fit with room to spare -- this is the constraint the dome
++                # used to stand in for, back when it was bigger than they are.
++                if zc + R + r > top[i] - 0.8:
+                     return False
+-                for s in (i - 1, i):          # adjacent articulated segments
+-                    if 0 <= s < len(segl) and 2 * Rb > segl[s] - 2.4:
+-                        return False          # 2.4 = clearance + solid bridge
++                if R + r > self.halfwidth_at(xa, zc) - 0.8:
 +                    return False
 +                # The cup is the dome ball grown by face_gap/2, so what is
 +                # left of the rear segment outside it is the body wall. Keep
@@ -108,13 +140,9 @@
 +                # to the skin and ends in a knife edge.
 +                lip = dome + p.face_gap / 2 + 1.0
 +                if zc + lip > top[i]:
-                     return False
--                if zc + Rb > top[i] - 0.9:
++                    return False
 +                if lip > self.halfwidth_at(xa, zc):
-                     return False
--                for s in (i - 1, i):          # adjacent articulated segments
--                    if 0 <= s < len(segl) and 2 * Rb > segl[s] - 2.4:
--                        return False          # 2.4 = clearance + solid bridge
++                    return False
 +                span = off + 2 * (R + r)
 +                for s_ in (i - 1, i):
 +                    if 0 <= s_ < len(segl) and span > segl[s_] - 2.0:
@@ -169,15 +197,15 @@
 -            sw = max(0.0, th - half_neck)
 -            grip = R - (R + p.clearance) * np.sin(np.deg2rad(th))
 -            if sw < sw_req - 0.5:
-+            sw = (p.swing_front_deg
-+                  + (p.swing_rear_deg - p.swing_front_deg) * t)
-+            if r < p.ring_tube_min + 0.15:
-                 self.warnings.append(
+-                self.warnings.append(
 -                    f"joint at x={xa:.1f}: swing limited to +/-{sw:.0f} deg "
 -                    f"(requested {sw_req:.0f}) to keep the ball captured; "
 -                    f"a wider body allows more swing")
 -            if grip < 0.45:
--                self.warnings.append(
++            sw = (p.swing_front_deg
++                  + (p.swing_rear_deg - p.swing_front_deg) * t)
++            if r < p.ring_tube_min + 0.15:
+                 self.warnings.append(
 -                    f"joint at x={xa:.1f}: only {grip:.2f} mm of socket grip "
 -                    f"-- may pop apart easily; lower swing_*_deg or raise "
 -                    f"joint_capture")
@@ -196,8 +224,21 @@
 +                xa=float(xa), top=top[i], R=float(R), rt=float(r),
 +                off=float(off), zc=float(zc), dome=float(dome),
 +                swing=float(sw),
-+                # tilted ring: axis in XZ, `a` from vertical; sits forward
-+                axA=(float(sa), 0.0, float(ca)),
++                # Tilted ring: axis in XZ, `a` from vertical; sits forward.
++                #
++                # The sign of the x component decides which half of the ring
++                # is the half that protrudes past the seam, and it is not a
++                # free choice. Mirroring x swaps the two rings' positions, and
++                # the vertical ring is symmetric about its own centre, so both
++                # signs give an identical link and an identical separation --
++                # but only one of them prints. With +sa the protruding arc is
++                # the ring's *low* half, and its bottom (z = zc - R sin a - rt)
++                # sits out past the seam face with nothing under it: the
++                # printer would have to start it in mid-air. With -sa the
++                # protruding arc is the high half, springing from the body at
++                # z = zc + R sin a / 2 and arching up. Same ring, same joint,
++                # supported instead of floating.
++                axA=(float(-sa), 0.0, float(ca)),
 +                cA=(float(xa - off / 2), 0.0, float(zc)),
 +                # vertical ring: axis along Y; sits aft
 +                axB=(0.0, 1.0, 0.0),
@@ -206,7 +247,7 @@
  
      # ---------------- fins & face -----------------------------------
      def with_fins(self, X, Y, Z):
-@@ -587,77 +619,119 @@
+@@ -587,77 +660,119 @@
          # flat belly: the build-plate cut
          return np.maximum(d, (-Z).astype(F32))
  
@@ -389,7 +430,7 @@
              out = seg if out is None else np.minimum(out, seg)
          for g in fins:
              for sgn in (1.0, -1.0):
-@@ -680,18 +754,23 @@
+@@ -680,18 +795,23 @@
  # ======================================================================
  # Meshing, export, verification
  # ======================================================================
@@ -420,7 +461,7 @@
      verts, faces, _, _ = measure.marching_cubes(vol, level=0.0,
                                                  spacing=(res, res, res))
      verts += np.array([xs[0], ys[0], zs[0]], dtype=np.float64)
-@@ -711,11 +790,8 @@
+@@ -711,11 +831,8 @@
          f.write(rec.tobytes())
  
  
@@ -434,7 +475,7 @@
      parent = np.arange(len(verts))
  
      def find(a):
-@@ -730,7 +806,41 @@
+@@ -730,7 +847,41 @@
              b = find(tri[k])
              if a != b:
                  parent[b] = a
@@ -477,7 +518,7 @@
      return manifold, shells
  
  
-@@ -816,6 +926,9 @@
+@@ -816,6 +967,9 @@
            f"segments, {len(b.joints)} joints at x = {jxs}")
  
      verts, faces = mesh(b, res)
@@ -487,7 +528,7 @@
      write_stl(args.out, verts, faces)
      man, shells = mesh_stats(verts, faces)
      expected = (p.n_segments + 2 + (2 if p.pec_length > 0.5 else 0)
-@@ -827,8 +940,17 @@
+@@ -827,8 +981,17 @@
                "orphaned. Inspect before printing.")
  
      if args.coupon:
@@ -501,7 +542,7 @@
 +        cv, cf = mesh(b, res, side_fins=False, box=(
 +            mid["xa"] - reach - 2.0, mid["xa"] + reach + 2.0,
 +            -(mid["R"] + mid["rt"] + 2.5), mid["R"] + mid["rt"] + 2.5,
-+            0.0, mid["zc"] + mid["dome"] + 2.5))
++            0.0, mid["zc"] + mid["R"] + mid["rt"] + 2.5))
 +        cv, cf, _ = drop_debris(cv, cf, res)
          cp = args.out.replace(".stl", "") + "_joint_test.stl"
          write_stl(cp, cv, cf)
