@@ -482,9 +482,34 @@ below roughly two voxels of the STL resolution it closes up and the parts
 come out welded.
 
 **Orbit** mode: one finger orbits, two fingers pinch and pan. **Move**
-mode: one finger slides the selected shape across the screen plane, two
-fingers raise and lower it. ⤢ frames the model in whatever strip of screen
-the sheet leaves visible. Drag or tap the grip to resize the sheet.
+mode: one finger slides the selection across the screen plane, two fingers
+raise and lower it. ⤢ frames the model in whatever strip of screen the
+sheet leaves visible. Drag or tap the grip to resize the sheet.
+
+### Selecting
+
+Selected shapes turn **blue** in the viewport, and because shapes blend
+into each other the blue is mixed with the same weight the distance is —
+so where a selected shape melts into an unselected one, the colour fades
+across the blend instead of stopping at a hard line. It shows you exactly
+how far a shape's influence reaches, which is otherwise guesswork.
+
+The button row above the shape list decides what a tap does:
+
+- **Single** — the tapped shape becomes the selection.
+- **Sticky** — the tapped shape is added to it, so you can gather several.
+- **Body** — tapping any shape selects every shape in its body. Tapping a
+  body in the Bodies list does the same.
+
+**Hold a row** (about half a second) to take that shape back out of the
+selection; holding a body row removes all of its shapes. Holding is a
+deselect in every mode, and the selection can be emptied completely — the
+inspector then says so rather than pretending something is selected.
+
+**Move** drags everything selected at once, and **Delete** removes all of
+it. The sliders still edit one shape — the last one you tapped, which the
+list marks with a bar down its edge and the inspector heading names as
+*Editing 1 of N selected*.
 
 ### Getting it out
 

@@ -91,6 +91,11 @@
               padding:2px 6px; border-radius:5px; background:#33404b;
               color:var(--dim); }
   .node.away { opacity:.55; }
+  /* selected reads blue, the same blue the model is tinted with */
+  .node.pick { border-color:var(--sel); background:#1a2c36; }
+  .node.pick .nm { color:#cfe9f6; }
+  /* the primary — what the sliders edit — carries a bar down its edge */
+  .node.pick.sel { box-shadow:inset 3px 0 0 var(--sel); }
   .node.body .nm { font-weight:600; }
   .node.body.sel { border-color:var(--acc); background:#2b2519; }
   #bodies { display:flex; flex-direction:column; gap:5px; }
@@ -177,7 +182,13 @@
     </div>
     <h3>Shapes <span style="color:var(--dim);text-transform:none;letter-spacing:0"
         id="nodeCount"></span></h3>
+    <div class="seg" id="selSeg" style="margin-bottom:7px">
+      <button data-s="single" class="on">Single</button>
+      <button data-s="sticky">Sticky</button>
+      <button data-s="body">Body</button>
+    </div>
     <div id="nodes"></div>
+    <p id="selHint" style="color:var(--dim);font-size:11px;margin:6px 0 0"></p>
     <div class="bar" style="margin-top:8px">
       <button class="btn" id="addBtn">＋ Add shape</button>
       <button class="btn" id="dupBtn">Duplicate</button>
@@ -619,6 +630,59 @@ function syncBodies() {
 
 const bodyShapeCount = id => nodes.filter(n => n.op === 'add' && n.b === id).length;
 
+// ======================================================================
+// selection
+// ======================================================================
+// `picked` is the selection proper. It holds the shape objects rather than
+// their indices, so reordering with ▲▼ cannot rot it. `sel` is only which
+// member the inspector edits — the primary.
+let picked = new Set();
+let selMode = 'single';        // single | sticky | body
+
+// the member the inspector edits; keeps `sel` honest if it drifted out
+function primaryNode() {
+  const n = nodes[sel];
+  if (n && picked.has(n)) return n;
+  const i = nodes.findIndex(x => picked.has(x));
+  if (i >= 0) { sel = i; return nodes[i]; }
+  return null;
+}
+const bodyShapes = id => nodes.filter(n => n.op === 'add' && n.b === id);
+
+function pickShape(n) {
+  if (selMode === 'body' && n.op === 'add') {
+    const list = bodyShapes(n.b);
+    picked = new Set(list);
+  } else if (selMode === 'sticky') {
+    picked.add(n);
+  } else {
+    picked = new Set([n]);
+  }
+  sel = nodes.indexOf(n);
+  if (n.op === 'add') activeBody = n.b;
+}
+
+function pickBody(id) {
+  const list = bodyShapes(id);
+  if (selMode === 'sticky') list.forEach(n => picked.add(n));
+  else picked = new Set(list);
+  if (list.length) sel = nodes.indexOf(list[0]);
+}
+
+// long press: take it back out of the selection, whichever mode you are in
+function unpick(n) {
+  picked.delete(n);
+  if (nodes[sel] === n) {
+    const i = nodes.findIndex(x => picked.has(x));
+    if (i >= 0) sel = i;
+  }
+}
+
+// after nodes are replaced or spliced, drop members that are no longer there
+const syncPicked = () =>
+  picked = new Set([...picked].filter(n => nodes.indexOf(n) >= 0));
+const resetPicked = () => picked = new Set(nodes[sel] ? [nodes[sel]] : []);
+
 // sceneBounds() is defined in an earlier script block, so it cannot reach
 // bodyShown — hand it a list with the hidden bodies already taken out.
 const shownNodes = () => nodes.filter(n => n.op !== 'add' || bodyShown(n.b));
@@ -686,7 +750,7 @@ function undo() {
   nodes = d.nodes; sel = Math.min(d.sel, nodes.length - 1);
   if (Array.isArray(d.bodies) && d.bodies.length) bodies = d.bodies;
   if (typeof d.activeBody === 'number') activeBody = d.activeBody;
-  syncBodies();
+  syncBodies(); resetPicked();
   document.getElementById('undoBtn').disabled = !undoStack.length;
   rebuildShader(); renderList(); save(); needDraw();
 }
@@ -720,7 +784,7 @@ function adopt(doc) {
     else if (n.tg && !Array.isArray(n.tg)) n.tg = null;
     if (Array.isArray(n.tg)) n.tg = n.tg.filter(id => typeof id === 'number');
   }
-  syncBodies();
+  syncBodies(); resetPicked();
   return true;
 }
 
@@ -739,6 +803,7 @@ if (!load()) {
   bodies = [{ id: 0, name: 'Body 1', on: true }];
   activeBody = 0;
   sel = 0;
+  resetPicked();
 }
 
 // ======================================================================
@@ -782,6 +847,20 @@ uniform mat3 uCam;          // columns: right, up, forward
 uniform float uFocal;
 uniform vec4 uD[${MAXN * 3}];
 uniform vec3 uTint;
+uniform vec3 uSelTint;
+
+// How much of the *accumulated* side survives a smin/smax. The colour has to
+// be mixed with the same weight the distance is, or the blue would sit off
+// the blend instead of fading across it. Set by map(), read after the hit.
+float gSel;
+float wmin(float a, float b, float k){
+  return (k <= 0.0) ? ((a < b) ? 1.0 : 0.0)
+                    : clamp(0.5 + 0.5*(b - a)/k, 0.0, 1.0);
+}
+float wmax(float a, float b, float k){
+  return (k <= 0.0) ? ((a > b) ? 1.0 : 0.0)
+                    : clamp(0.5 - 0.5*(b - a)/k, 0.0, 1.0);
+}
 
 float smin(float a, float b, float k){
   if (k <= 0.0) return min(a, b);
@@ -803,8 +882,9 @@ vec3 invRot(vec3 p, vec3 e){
 ${PRIM_KEYS.map(k => PRIMS[k].glsl).join('\n')}
 
 float map(vec3 P){
-  float d = 1e9, dB, di; vec3 q;
-${mapBody}  return d;
+  float d = 1e9, dB, di, w, sw = 0.0, swB = 0.0; vec3 q;
+${mapBody}  gSel = sw;
+  return d;
 }
 
 vec3 normalAt(vec3 p){
@@ -877,7 +957,10 @@ void main(){
     vec3 V = normalize(uEye - p);
     float spec = pow(max(dot(n, normalize(L1 + V)), 0.0), 40.0)*0.35;
     float amb = (0.30 + 0.12*n.z)*ao(p, n);
-    col = uTint*(amb + dif) + vec3(spec);
+    // normalAt() ran map() four times, so re-read the field here for gSel
+    map(p);
+    vec3 base = mix(uTint, uSelTint, clamp(gSel, 0.0, 1.0));
+    col = base*(amb + dif) + vec3(spec);
     col = pow(col, vec3(0.62));
   } else {
     col = mix(vec3(0.063, 0.078, 0.094), vec3(0.10, 0.12, 0.145),
@@ -917,7 +1000,7 @@ function rebuildShader() {
   const slot = new Map();
   used.forEach((n, i) => slot.set(n, i));
   buildPlan(used).forEach(part => {
-    body += '  dB = 1e9;\n';
+    body += '  dB = 1e9; swB = 0.0;\n';
     part.nodes.forEach(n => {
       const i = slot.get(n);
       if (i === undefined) return;
@@ -929,11 +1012,21 @@ function rebuildShader() {
       if (n.mz) body += '  q.z = abs(q.z);\n';
       body += `  q = invRot(q - uD[${b}].xyz, uD[${b + 1}].xyz);\n`;
       body += `  di = ${PRIMS[n.t].fn}(q, uD[${b + 2}].xyz, uD[${b + 1}].w);\n`;
-      if (n.op === 'add') body += `  dB = smin(dB, di, uD[${b}].w);\n`;
-      else if (n.op === 'cut') body += `  dB = smax(dB, -di, uD[${b}].w);\n`;
-      else body += `  dB = smax(dB, di, uD[${b}].w);\n`;
+      // weight first, then the distance: wmin/wmax need the pre-blend dB
+      if (n.op === 'add') {
+        body += `  w = wmin(dB, di, uD[${b}].w);\n`;
+        body += `  dB = smin(dB, di, uD[${b}].w);\n`;
+      } else if (n.op === 'cut') {
+        body += `  w = wmax(dB, -di, uD[${b}].w);\n`;
+        body += `  dB = smax(dB, -di, uD[${b}].w);\n`;
+      } else {
+        body += `  w = wmax(dB, di, uD[${b}].w);\n`;
+        body += `  dB = smax(dB, di, uD[${b}].w);\n`;
+      }
+      body += `  swB = mix(uD[${b + 2}].w, swB, w);\n`;
     });
-    body += '  d = min(d, dB);\n';   // plain min: bodies must not blend
+    // plain min: bodies must not blend, so the colour switches rather than fades
+    body += '  if (dB < d) { d = dB; sw = swB; }\n';
   });
   if (!body) body = '  d = 1e9;\n';
   let np;
@@ -942,7 +1035,7 @@ function rebuildShader() {
   if (prog) gl.deleteProgram(prog);
   prog = np;
   U = {};
-  for (const k of ['uRes', 'uEye', 'uCam', 'uFocal', 'uTint'])
+  for (const k of ['uRes', 'uEye', 'uCam', 'uFocal', 'uTint', 'uSelTint'])
     U[k] = gl.getUniformLocation(prog, k);
   U.uD = gl.getUniformLocation(prog, 'uD[0]');
   errbar.style.display = 'none';
@@ -959,6 +1052,7 @@ function packUniforms() {
     uData[b + 6] = n.r[2] * Math.PI / 180;
     uData[b + 7] = n.round || 0;
     uData[b + 8] = n.d[0]; uData[b + 9] = n.d[1]; uData[b + 10] = n.d[2];
+    uData[b + 11] = picked.has(n) ? 1 : 0;   // spare slot: drives the blue
   });
 }
 
@@ -1074,6 +1168,22 @@ function selectionLines(n) {
   return new Float32Array(out);
 }
 
+// one box per selected shape
+function selectionOutlines() {
+  const parts = [];
+  for (const n of picked) {
+    if (!n.on) continue;
+    const l = selectionLines(n);
+    if (l && l.length) parts.push(l);
+  }
+  if (!parts.length) return null;
+  const total = parts.reduce((a, p) => a + p.length, 0);
+  const out = new Float32Array(total);
+  let at = 0;
+  for (const p of parts) { out.set(p, at); at += p.length; }
+  return out;
+}
+
 // ---------- draw loop: full res when idle, coarse while a finger is down ----
 let pending = false, interacting = false, idleTimer = 0;
 function needDraw() {
@@ -1108,11 +1218,12 @@ function draw() {
     new Float32Array([r[0], r[1], r[2], u[0], u[1], u[2], f[0], f[1], f[2]]));
   gl.uniform1f(U.uFocal, 0.5 / TAN_HALF_FOV);
   gl.uniform3f(U.uTint, 0.91, 0.53, 0.22);
+  gl.uniform3f(U.uSelTint, 0.24, 0.60, 0.95);
   gl.uniform4fv(U.uD, uData);
   gl.bindVertexArray(emptyVAO);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-  const lines = nodes[sel] && nodes[sel].on ? selectionLines(nodes[sel]) : null;
+  const lines = selectionOutlines();
   if (lines && lines.length) {
     gl.useProgram(lineProg);
     gl.bindVertexArray(lineVAO);
@@ -1141,12 +1252,14 @@ function screenAxes() {
   const s = 2 * cam.dist * TAN_HALF_FOV / (canvas.clientHeight || innerHeight);
   return { r, u, s };
 }
+// Move drags the whole selection, which is the point of being able to make one
 function moveSelected(dx, dy, dz) {
-  const n = nodes[sel];
-  if (!n) return;
+  if (!picked.size) return;
   const lim = v => Math.min(Math.max(v, -150), 150);   // matches the sliders
-  n.p[0] = lim(n.p[0] + dx); n.p[1] = lim(n.p[1] + dy);
-  n.p[2] = lim(n.p[2] + dz);
+  for (const n of picked) {
+    n.p[0] = lim(n.p[0] + dx); n.p[1] = lim(n.p[1] + dy);
+    n.p[2] = lim(n.p[2] + dz);
+  }
   refreshInspectorValues();
   save(); scheduleInfo();
 }
@@ -1178,7 +1291,7 @@ canvas.addEventListener('pointermove', e => {
     if (lastMid) {
       const dx = mid[0] - lastMid[0], dy = mid[1] - lastMid[1];
       const { r, u, s } = screenAxes();
-      if (mode === 'grab' && nodes[sel]) {
+      if (mode === 'grab' && picked.size) {
         // two fingers in Move mode raise/lower along the build direction
         moveSelected(0, 0, -dy * s);
       } else {
@@ -1235,6 +1348,35 @@ $('undoBtn').onclick = undo;
 $('undoBtn').disabled = true;
 $('viewBtn').onclick = frameModel;
 
+// ---------- long press ----------
+// Holding a row takes it out of the selection. Returns a probe the click
+// handler checks, so the press does not also count as a tap. Movement past a
+// few pixels means the sheet is being scrolled, not a row held.
+function onLongPress(el, fn) {
+  let timer = 0, fired = false, at = null;
+  const stop = () => { clearTimeout(timer); timer = 0; };
+  el.addEventListener('pointerdown', e => {
+    if (e.target.dataset && e.target.dataset.act) return;   // ●, ▲▼, ✎, ✕
+    fired = false;
+    at = [e.clientX, e.clientY];
+    timer = setTimeout(() => { fired = true; stop(); fn(); }, 500);
+  });
+  el.addEventListener('pointermove', e => {
+    if (timer && at && Math.hypot(e.clientX - at[0], e.clientY - at[1]) > 8) stop();
+  });
+  ['pointerup', 'pointerleave', 'pointercancel'].forEach(k =>
+    el.addEventListener(k, stop));
+  return () => fired;
+}
+
+$('selSeg').onclick = e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  selMode = b.dataset.s;
+  [...$('selSeg').children].forEach(x => x.classList.toggle('on', x === b));
+  renderList();
+};
+
 // ---------- body list ----------
 // The whole point of a body is that it is a thing you work on, so it needs to
 // be visible without hunting through the shapes: what exists, which one you
@@ -1264,10 +1406,18 @@ function renderBodies() {
         nodes = nodes.filter(n => !(n.op === 'add' && n.b === b.id));
         bodies = bodies.filter(x => x.id !== b.id);
         sel = Math.max(0, Math.min(sel, nodes.length - 1));
-        syncBodies();
-      } else activeBody = b.id;
+        syncBodies(); syncPicked();
+      } else if (!heldBody()) {
+        activeBody = b.id;
+        // in Body mode the list is a selector as much as a switcher
+        if (selMode === 'body' || selMode === 'sticky') pickBody(b.id);
+      }
       rebuildShader(); renderList(); renderInspector(); save(); needDraw();
     };
+    const heldBody = onLongPress(el, () => {
+      bodyShapes(b.id).forEach(unpick);
+      renderList(); renderInspector(); save(); needDraw();
+    });
     box.appendChild(el);
   });
   $('bodyCount').textContent = bodies.length;
@@ -1306,7 +1456,8 @@ function renderList() {
     // shapes outside the body you are working on stay legible but step back
     const elsewhere = bodies.length > 1 &&
       (n.op === 'add' ? n.b !== activeBody : !hits(n, activeBody));
-    el.className = 'node' + (i === sel ? ' sel' : '') +
+    el.className = 'node' + (picked.has(n) ? ' pick' : '') +
+                   (i === sel && picked.has(n) ? ' sel' : '') +
                    (n.on ? '' : ' off') + (elsewhere ? ' away' : '');
     const opCls = n.op === 'cut' ? 'cut' : n.op === 'keep' ? 'keep' : '';
     // a one-body model reads exactly as it did before bodies existed
@@ -1331,17 +1482,23 @@ function renderList() {
       } else if (act === 'down' && i < nodes.length - 1) {
         snapshot(); nodes.splice(i + 1, 0, nodes.splice(i, 1)[0]);
         sel = i + 1; rebuildShader();
-      } else {
-        sel = i;
-        // picking a shape moves you into its body, so the next shape you add
-        // lands where you are looking
-        if (n.op === 'add') activeBody = n.b;
+      } else if (!held()) {
+        // picking a shape also moves you into its body, so the next shape you
+        // add lands where you are looking
+        pickShape(n);
       }
       renderList(); renderInspector(); save(); needDraw();
     };
+    const held = onLongPress(el, () => {
+      unpick(n);
+      renderList(); renderInspector(); save(); needDraw();
+    });
     box.appendChild(el);
   });
   $('nodeCount').textContent = nodes.length + '/' + MAXN;
+  $('selHint').textContent = picked.size
+    ? picked.size + ' selected · hold a row to deselect'
+    : 'Nothing selected · tap a shape';
   renderBodies();
   scheduleInfo();
 }
@@ -1454,13 +1611,22 @@ function renderInspector() {
   const host = $('inspector');
   host.innerHTML = '';
   inspectorRows = [];
-  const n = nodes[sel];
-  if (!n) { scheduleInfo(); return; }
+  const n = primaryNode();
+  if (!n) {
+    const p = document.createElement('p');
+    p.style.cssText = 'color:var(--dim);font-size:12px;margin:16px 0';
+    p.textContent = 'Nothing selected. Tap a shape to edit it.';
+    host.appendChild(p);
+    scheduleInfo();
+    return;
+  }
   const P = PRIMS[n.t];
   const add = el => { host.appendChild(el); if (el.refresh) inspectorRows.push(el); };
 
   const h = document.createElement('h3');
-  h.textContent = 'Selected shape';
+  // with several picked, Move drags them all but the sliders edit this one
+  h.textContent = picked.size > 1
+    ? `Editing 1 of ${picked.size} selected` : 'Selected shape';
   host.appendChild(h);
 
   // type
@@ -1645,6 +1811,8 @@ $('addBtn').onclick = () => {
         fresh.b = activeBody;      // build into the body you are standing in
         nodes.push(fresh);
         sel = nodes.length - 1;
+        if (selMode === 'single') picked = new Set();
+        picked.add(fresh);
         closeModal();
         rebuildShader(); renderList(); renderInspector(); save(); needDraw();
       };
@@ -1657,13 +1825,17 @@ $('dupBtn').onclick = () => {
   c.p[0] += 10;
   nodes.splice(sel + 1, 0, c);
   sel++;
+  resetPicked();
   rebuildShader(); renderList(); renderInspector(); save(); needDraw();
 };
 $('delBtn').onclick = () => {
-  if (!nodes[sel]) return;
+  if (!picked.size) return;
   snapshot();
-  nodes.splice(sel, 1);
-  sel = Math.max(0, Math.min(sel, nodes.length - 1));
+  const doomed = picked;
+  const first = nodes.findIndex(n => doomed.has(n));
+  nodes = nodes.filter(n => !doomed.has(n));
+  sel = Math.max(0, Math.min(first, nodes.length - 1));
+  resetPicked();
   syncBodies();   // keep targets and the active body pointing at what is left
   rebuildShader(); renderList(); renderInspector(); save(); needDraw();
 };
@@ -1696,6 +1868,7 @@ $('startBtn').onclick = () => {
         activeBody = 0;
         syncBodies();
         sel = 0;
+        resetPicked();
         closeModal();
         rebuildShader(); renderList(); renderInspector(); save();
         frameModel();
