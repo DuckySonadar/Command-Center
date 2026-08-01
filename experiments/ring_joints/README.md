@@ -159,6 +159,30 @@ Same ring, same joint, same everything except supported instead of floating.
 `ring_axis_deg` is still 30; it is the sign of the axis's x component that
 matters, and it lives in `_size_joints`.
 
+### `ring_fillet` — a root fillet, off by default
+
+`_weld` can smooth-union each ring into its own segment instead of hard-
+unioning it, filleting the root. A plain union leaves a sharp crease at the
+one place the ring is a cantilever, so a fillet is right on stress grounds
+whatever it looks like. It is **off** (`ring_fillet = 0.0`) because it was
+written from a guess at what the owner's "fused / consumed edges" sketch was
+asking for, and that guess is unconfirmed. At 0 the build is identical to the
+plain-union version.
+
+Two things it turned up that are worth keeping either way:
+
+- **The relief has to be carved after the ring is welded, not before.**
+  `smin(a, b, k)` bulges by up to k/4 where two surfaces meet, and the ring
+  root sits squarely inside the channel the neighbouring segment carves for
+  it. Carving first, a 0.8 mm fillet took the measured joint gap from 0.55 mm
+  down to 0.40. Carving last restores it exactly, and costs nothing: the two
+  bare rings are `clearance` apart by construction and stay that way through
+  the swing, so the carve has none of the ring to take.
+- **`smin` is not `min` in float32** outside the blend band — `b + (a - b)` is
+  not bitwise `a`. Blending across the whole grid flipped one voxel on the
+  belly rim, 25 mm from the nearest ring, and left a two-triangle hole in an
+  otherwise manifold plate. `_weld` blends only inside `|seg - ring| < k`.
+
 ### Sizing consequence — read this before changing segment counts
 
 A 0.70 mm minimum tube radius forces `R ≥ 3.9`, which makes the linkage

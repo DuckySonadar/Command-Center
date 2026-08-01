@@ -76,6 +76,16 @@ class FishParams:
     ring_axis_deg: float = 30.0        # tilted ring axis from vertical (XZ)
     ring_tube_min: float = 0.70        # thinnest acceptable tube radius
     ring_max: float = 7.0              # largest ring centreline radius
+    # Fillet where a ring meets its own segment. A plain union leaves a sharp
+    # crease there -- a stress riser at the one place the ring is a
+    # cantilever. Blended, the ring's edge is consumed into the body surface
+    # where the two meet.
+    #
+    # OFF by default: it was written from a guess at what "fused" should look
+    # like and the owner has not confirmed it. The machinery is verified (see
+    # `_weld`, and the carve ordering in `segment`) -- set it to ~0.8 to see
+    # it. At 0 the build is identical to the plain-union version.
+    ring_fillet: float = 0.0
     # There is no dome. An earlier version nested a ball on the front segment
     # into a matching cup on the rear, as a second capture on top of the
     # rings -- but the rings are a link, they hold on their own, and a ball
@@ -389,9 +399,9 @@ class FishBuilder:
         r = self._ring_tube(R, p.ring_axis_deg, p.clearance)
         off = R * ca
         # Ring height above the plate. The *other* segment's ring is carved
-        # out of this one with `clearance` of relief, so the floor left under
-        # that carve is (zc - R - r - clearance); keep 0.6 mm of it or the
-        # segment ends in a wafer that will not print.
+        # out of this one, so the floor left under that carve is
+        # (zc - R - r - relief); keep 0.6 mm of it or the segment ends in a
+        # wafer that will not print.
         zc = R + r + p.clearance + 0.6
         return r, off, zc
 
@@ -710,6 +720,27 @@ class FishBuilder:
             F = np.maximum(F, -self.fin_cavity(g, X, Y, Z))
         return F
 
+    def _weld(self, seg, ring):
+        """Fuse a ring into its own segment with a fillet at the root.
+
+        `ring_fillet = 0` is a plain union and leaves a crease. The blend adds
+        material where the ring comes within the fillet distance of the body,
+        which is the root -- and the root sits inside the channel the
+        neighbouring segment carves, so it *does* eat clearance. `segment`
+        carves that channel after welding for exactly this reason."""
+        k = self.p.ring_fillet
+        out = np.minimum(seg, ring)
+        if k <= 0:
+            return out
+        # Blend only inside the band where the two surfaces are actually
+        # close. `smin` reduces to `min` outside it mathematically, but not in
+        # float32 -- `b + (a - b)` is not bitwise `a` -- and that rounding was
+        # enough to flip a voxel on the belly rim 25 mm from the nearest ring
+        # and leave a two-triangle hole in the plate.
+        band = np.abs(seg - ring) < F32(k)
+        out[band] = smin(seg[band], ring[band], F32(k))
+        return out
+
     def segment(self, i, X, Y, Z, F=None, side_fins=True):
         """Segment `i` on its own, from the head (0) back. Kept separate from
         `plate` so that the swing and clearance checks measure the same field
@@ -724,21 +755,28 @@ class FishBuilder:
             jf = J[i - 1]                      # vertical ring side
             fv = self._joint(jf, X, Y, Z, "faceR")
             seg = np.maximum(seg, (F32(p.face_gap / 2) - fv))
-            # clear room for the other segment's tilted ring to swing
-            seg = np.maximum(seg, -(self._swept(jf, X, Y, Z, "ringA")
-                                    - F32(p.clearance)))
             ring = np.maximum(self._joint(jf, X, Y, Z, "ringB"),
                               F + F32(0.15))   # never break the skin
-            seg = np.minimum(seg, ring)
+            seg = self._weld(seg, ring)
+            # Clear room for the other segment's tilted ring to swing. This
+            # has to come *after* the weld: `smin` bulges by up to k/4 where
+            # two surfaces meet, the ring root sits squarely inside this
+            # channel, and carving first let a 0.8 mm fillet take the joint
+            # gap from 0.55 down to 0.40 mm. Carving last costs nothing --
+            # the two bare rings are `clearance` apart by construction and
+            # stay that way through the swing, so there is none of the ring
+            # here for the carve to take.
+            seg = np.maximum(seg, -(self._swept(jf, X, Y, Z, "ringA")
+                                    - F32(p.clearance)))
         if i < nseg - 1:                       # front side of joint jr:
             jr = J[i]                          # tilted ring side
             fv = self._joint(jr, X, Y, Z, "faceF")
             seg = np.maximum(seg, fv + F32(p.face_gap / 2))
-            seg = np.maximum(seg, -(self._swept(jr, X, Y, Z, "ringB")
-                                    - F32(p.clearance)))
             ring = np.maximum(self._joint(jr, X, Y, Z, "ringA"),
                               F + F32(0.15))
-            seg = np.minimum(seg, ring)
+            seg = self._weld(seg, ring)
+            seg = np.maximum(seg, -(self._swept(jr, X, Y, Z, "ringB")
+                                    - F32(p.clearance)))
         return seg
 
     def plate(self, X, Y, Z, side_fins=True):
