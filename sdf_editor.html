@@ -90,6 +90,12 @@
   .node .op { font-size:10px; letter-spacing:.06em; text-transform:uppercase;
               padding:2px 6px; border-radius:5px; background:#33404b;
               color:var(--dim); }
+  .node.away { opacity:.55; }
+  .node.body .nm { font-weight:600; }
+  .node.body.sel { border-color:var(--acc); background:#2b2519; }
+  #bodies { display:flex; flex-direction:column; gap:5px; }
+  #bnm { width:100%; background:#10141a; color:var(--ink); font:inherit;
+         border:1px solid var(--line); border-radius:8px; padding:9px 10px; }
   .node .bd { font-size:10px; letter-spacing:.04em; padding:2px 6px;
               border-radius:5px; border:1px solid var(--line); color:var(--dim);
               max-width:96px; overflow:hidden; text-overflow:ellipsis;
@@ -163,6 +169,12 @@
 <div id="panel">
   <div id="grip"><div></div></div>
   <div id="sheetBody">
+    <h3>Bodies <span style="color:var(--dim);text-transform:none;letter-spacing:0"
+        id="bodyCount"></span></h3>
+    <div id="bodies"></div>
+    <div class="bar" style="margin-top:6px">
+      <button class="btn sm" id="addBodyBtn">＋ Body</button>
+    </div>
     <h3>Shapes <span style="color:var(--dim);text-transform:none;letter-spacing:0"
         id="nodeCount"></span></h3>
     <div id="nodes"></div>
@@ -573,35 +585,43 @@ function makeNode(type, over) {
 // one part while the part next to it stays whole. The finished bodies are
 // hard-min'd together at the end, never smin'd, or they would melt back
 // into one lump.
-let bodies = [{ id: 0, name: 'Body 1' }];
+let bodies = [{ id: 0, name: 'Body 1', on: true }];
+// the body new shapes join, and the one the shape list highlights
+let activeBody = 0;
 
-const bodyName = id => (bodies.find(b => b.id === id) || {}).name || '?';
+const bodyById = id => bodies.find(b => b.id === id);
+const bodyName = id => (bodyById(id) || {}).name || '?';
+const bodyShown = id => { const b = bodyById(id); return !b || b.on !== false; };
 const hits = (n, id) => !n.tg || n.tg.indexOf(id) >= 0;
 
+// Bodies are an explicit list, not one derived from the shapes: you can make
+// an empty one and then build into it, which is the natural order to work in.
 function addBody() {
   const id = bodies.reduce((m, b) => Math.max(m, b.id), -1) + 1;
-  bodies.push({ id, name: 'Body ' + (id + 1) });
+  bodies.push({ id, name: 'Body ' + (id + 1), on: true });
   return id;
 }
 
-// Bodies exist only because shapes build them, so the list is derived rather
-// than managed: once the last add is deleted or moved away, the body goes.
-// A cut left targeting nothing stays inert on purpose — promoting it to "all"
-// would have it suddenly carve into parts it was never pointed at.
+// Keeps the list self-consistent after any edit: never empty, no shape
+// pointing at a body that is gone, no cut naming one. A cut left targeting
+// nothing stays inert on purpose — promoting it to "all" would have it
+// suddenly carve into parts it was never pointed at.
 function syncBodies() {
-  const used = new Set(nodes.filter(n => n.op === 'add').map(n => n.b));
-  bodies = bodies.filter(b => used.has(b.id));
-  for (const id of used)
-    if (!bodies.some(b => b.id === id)) bodies.push({ id, name: 'Body ' + (id + 1) });
+  if (!bodies.length) bodies = [{ id: 0, name: 'Body 1', on: true }];
   bodies.sort((a, b) => a.id - b.id);
-  if (!bodies.length) bodies = [{ id: 0, name: 'Body 1' }];
-
   const live = new Set(bodies.map(b => b.id));
   for (const n of nodes) {
     if (n.op === 'add') { if (!live.has(n.b)) n.b = bodies[0].id; }
     else if (n.tg) n.tg = n.tg.filter(id => live.has(id));
   }
+  if (!live.has(activeBody)) activeBody = bodies[0].id;
 }
+
+const bodyShapeCount = id => nodes.filter(n => n.op === 'add' && n.b === id).length;
+
+// sceneBounds() is defined in an earlier script block, so it cannot reach
+// bodyShown — hand it a list with the hidden bodies already taken out.
+const shownNodes = () => nodes.filter(n => n.op !== 'add' || bodyShown(n.b));
 
 // One entry per body, holding the shapes that body is folded from: its own
 // adds plus every cut/keep aimed at it, in list order. Bodies with nothing
@@ -610,6 +630,7 @@ function buildPlan(list) {
   const live = list.filter(n => n.on);
   const plan = [];
   for (const b of bodies) {
+    if (b.on === false) continue;          // hidden: out of the view and the STL
     const own = live.filter(n => n.op === 'add' ? n.b === b.id : hits(n, b.id));
     if (own.some(n => n.op === 'add')) plan.push({ id: b.id, nodes: own });
   }
@@ -654,7 +675,7 @@ const STARTERS = {
 };
 
 function snapshot() {
-  undoStack.push(JSON.stringify({ nodes, bodies, sel }));
+  undoStack.push(JSON.stringify({ nodes, bodies, sel, activeBody }));
   if (undoStack.length > 40) undoStack.shift();
   document.getElementById('undoBtn').disabled = false;
 }
@@ -664,12 +685,13 @@ function undo() {
   const d = JSON.parse(s);
   nodes = d.nodes; sel = Math.min(d.sel, nodes.length - 1);
   if (Array.isArray(d.bodies) && d.bodies.length) bodies = d.bodies;
+  if (typeof d.activeBody === 'number') activeBody = d.activeBody;
   syncBodies();
   document.getElementById('undoBtn').disabled = !undoStack.length;
   rebuildShader(); renderList(); save(); needDraw();
 }
 function save() {
-  try { localStorage.setItem(STORE, JSON.stringify({ nodes, bodies, sel })); }
+  try { localStorage.setItem(STORE, JSON.stringify({ nodes, bodies, sel, activeBody })); }
   catch (e) { /* private browsing: editing still works, it just won't persist */ }
 }
 
@@ -684,7 +706,14 @@ function adopt(doc) {
   if (!kept.length) return false;
   nodes = kept;
   bodies = (doc.bodies || []).filter(b => b && typeof b.id === 'number')
-             .map(b => ({ id: b.id, name: String(b.name || 'Body ' + (b.id + 1)) }));
+             .map(b => ({ id: b.id, name: String(b.name || 'Body ' + (b.id + 1)),
+                          on: b.on !== false }));
+  // a document may name bodies only on its shapes (v2 pruned empty ones)
+  for (const n of nodes)
+    if (n.op === 'add' && typeof n.b === 'number' && !bodies.some(b => b.id === n.b))
+      bodies.push({ id: n.b, name: 'Body ' + (n.b + 1), on: true });
+  activeBody = typeof doc.activeBody === 'number' ? doc.activeBody
+             : bodies.length ? bodies[0].id : 0;
   for (const n of nodes) {
     if (typeof n.b !== 'number') n.b = 0;
     if (n.op === 'add') n.tg = null;
@@ -707,7 +736,8 @@ function load() {
 }
 if (!load()) {
   nodes = JSON.parse(JSON.stringify(STARTERS['Ice cream']));
-  bodies = [{ id: 0, name: 'Body 1' }];
+  bodies = [{ id: 0, name: 'Body 1', on: true }];
+  activeBody = 0;
   sel = 0;
 }
 
@@ -967,7 +997,7 @@ function visibleBand() {
   return { w, H, h: H - hidden, hidden };
 }
 function frameModel() {
-  const B = sceneBounds(nodes);
+  const B = sceneBounds(shownNodes());
   if (!B) { cam.tgt = [0, 0, 12]; cam.dist = 150; needDraw(); return; }
   cam.tgt = [(B.lo[0] + B.hi[0]) / 2, (B.lo[1] + B.hi[1]) / 2,
              (B.lo[2] + B.hi[2]) / 2];
@@ -1205,13 +1235,79 @@ $('undoBtn').onclick = undo;
 $('undoBtn').disabled = true;
 $('viewBtn').onclick = frameModel;
 
+// ---------- body list ----------
+// The whole point of a body is that it is a thing you work on, so it needs to
+// be visible without hunting through the shapes: what exists, which one you
+// are building into, and a way to get the others out of the way.
+function renderBodies() {
+  const box = $('bodies');
+  box.innerHTML = '';
+  bodies.forEach(b => {
+    const el = document.createElement('div');
+    const count = bodyShapeCount(b.id);
+    el.className = 'node body' + (b.id === activeBody ? ' sel' : '') +
+                   (b.on === false ? ' off' : '');
+    el.innerHTML =
+      `<button class="ic" data-act="show">${b.on === false ? '○' : '●'}</button>` +
+      `<span class="nm">${b.name}</span>` +
+      `<span class="bd">${count} shape${count === 1 ? '' : 's'}</span>` +
+      `<button class="ic" data-act="rename">✎</button>` +
+      (bodies.length > 1 ? `<button class="ic" data-act="del">✕</button>` : '');
+    el.onclick = ev => {
+      const act = ev.target.dataset && ev.target.dataset.act;
+      if (act === 'show') {
+        snapshot(); b.on = b.on === false;
+      } else if (act === 'rename') {
+        renameBody(b); return;
+      } else if (act === 'del') {
+        snapshot();
+        nodes = nodes.filter(n => !(n.op === 'add' && n.b === b.id));
+        bodies = bodies.filter(x => x.id !== b.id);
+        sel = Math.max(0, Math.min(sel, nodes.length - 1));
+        syncBodies();
+      } else activeBody = b.id;
+      rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+    };
+    box.appendChild(el);
+  });
+  $('bodyCount').textContent = bodies.length;
+}
+
+function renameBody(b) {
+  openModal('Rename body',
+    `<input id="bnm" type="text" maxlength="24" value="${b.name.replace(/"/g, '&quot;')}">` +
+    '<div class="bar" style="margin-top:10px"><button class="btn" id="bok">Rename</button></div>',
+    () => {
+      const inp = $('bnm');
+      inp.focus(); inp.select();
+      const go = () => {
+        const v = inp.value.trim();
+        if (v) { snapshot(); b.name = v; }
+        closeModal();
+        renderList(); renderInspector(); save();
+      };
+      $('bok').onclick = go;
+      inp.onkeydown = e => { if (e.key === 'Enter') go(); };
+    });
+}
+
+$('addBodyBtn').onclick = () => {
+  snapshot();
+  activeBody = addBody();
+  renderList(); renderInspector(); save();
+};
+
 // ---------- shape list ----------
 function renderList() {
   const box = $('nodes');
   box.innerHTML = '';
   nodes.forEach((n, i) => {
     const el = document.createElement('div');
-    el.className = 'node' + (i === sel ? ' sel' : '') + (n.on ? '' : ' off');
+    // shapes outside the body you are working on stay legible but step back
+    const elsewhere = bodies.length > 1 &&
+      (n.op === 'add' ? n.b !== activeBody : !hits(n, activeBody));
+    el.className = 'node' + (i === sel ? ' sel' : '') +
+                   (n.on ? '' : ' off') + (elsewhere ? ' away' : '');
     const opCls = n.op === 'cut' ? 'cut' : n.op === 'keep' ? 'keep' : '';
     // a one-body model reads exactly as it did before bodies existed
     const badge = bodies.length < 2 ? ''
@@ -1235,12 +1331,18 @@ function renderList() {
       } else if (act === 'down' && i < nodes.length - 1) {
         snapshot(); nodes.splice(i + 1, 0, nodes.splice(i, 1)[0]);
         sel = i + 1; rebuildShader();
-      } else sel = i;
+      } else {
+        sel = i;
+        // picking a shape moves you into its body, so the next shape you add
+        // lands where you are looking
+        if (n.op === 'add') activeBody = n.b;
+      }
       renderList(); renderInspector(); save(); needDraw();
     };
     box.appendChild(el);
   });
   $('nodeCount').textContent = nodes.length + '/' + MAXN;
+  renderBodies();
   scheduleInfo();
 }
 
@@ -1313,8 +1415,9 @@ function chip(text, on, fn) {
 function bodyRow(n) {
   const row = chipRow('Body');
   bodies.forEach(b => row.box.appendChild(
-    chip(b.name, n.b === b.id, () => n.b = b.id)));
-  row.box.appendChild(chip('＋ New body', false, () => n.b = addBody()));
+    chip(b.name, n.b === b.id, () => { n.b = b.id; activeBody = b.id; })));
+  row.box.appendChild(chip('＋ New body', false,
+    () => { n.b = addBody(); activeBody = n.b; }));
   return row;
 }
 
@@ -1504,7 +1607,7 @@ function scheduleInfo() {
 }
 function updateInfo() {
   clearTimeout(infoTimer);
-  const B = sceneBounds(nodes);
+  const B = sceneBounds(shownNodes());
   if (!B) { infoEl.textContent = 'Nothing to print yet — add a shape.'; return; }
   const res = parseFloat($('resInp').value);
   const vox = Math.ceil((B.hi[0] - B.lo[0]) / res + 5) *
@@ -1539,9 +1642,7 @@ $('addBtn').onclick = () => {
         if (nodes.length >= MAXN) { showErr('Shape limit is ' + MAXN); closeModal(); return; }
         snapshot();
         const fresh = makeNode(b.dataset.prim);
-        // keep building the body you were working on, rather than starting one
-        fresh.b = nodes[sel] && nodes[sel].op === 'add' ? nodes[sel].b
-                : bodies.length ? bodies[0].id : 0;
+        fresh.b = activeBody;      // build into the body you are standing in
         nodes.push(fresh);
         sel = nodes.length - 1;
         closeModal();
@@ -1563,7 +1664,7 @@ $('delBtn').onclick = () => {
   snapshot();
   nodes.splice(sel, 1);
   sel = Math.max(0, Math.min(sel, nodes.length - 1));
-  syncBodies();   // that may have been the last shape building its body
+  syncBodies();   // keep targets and the active body pointing at what is left
   rebuildShader(); renderList(); renderInspector(); save(); needDraw();
 };
 
@@ -1591,7 +1692,8 @@ $('startBtn').onclick = () => {
         if (!b) return;
         snapshot();
         nodes = JSON.parse(JSON.stringify(STARTERS[b.dataset.st]));
-        bodies = [{ id: 0, name: 'Body 1' }];
+        bodies = [{ id: 0, name: 'Body 1', on: true }];
+        activeBody = 0;
         syncBodies();
         sel = 0;
         closeModal();
@@ -1655,7 +1757,7 @@ const stlKey = res =>
 
 $('stlBtn').onclick = () => {
   if (building) return;
-  const B = sceneBounds(nodes);
+  const B = sceneBounds(shownNodes());
   if (!B) { showErr('Nothing to export — add a shape first'); return; }
   const res = parseFloat($('resInp').value);
   // Building runs across several frames, so by the time it ends iOS has

@@ -432,11 +432,25 @@ after it are untouched — use ▲▼ to move a shape up or down the list.
 
 ### Bodies
 
-A body is one buildable part. Every Add belongs to one — its **Body** row
-in the inspector, with **＋ New body** to start another — and every Cut or
-Keep has an **Applies to** row naming the bodies it reaches. The default
-is *All bodies*, so a model that never touches any of this behaves exactly
-as it did before bodies existed.
+A body is one buildable part. The **Bodies** list sits above Shapes and is
+where you work with them:
+
+- **Tap a body** to make it the active one. New shapes are built into it,
+  and shapes belonging to anything else dim in the Shapes list, so you can
+  see at a glance what you are working on. Selecting a shape moves you into
+  its body, so the two lists stay in step.
+- **● / ○** hides a body. It leaves the viewport, the size readout and the
+  STL — the way to see inside an assembly, or to print one part of it.
+- **✎** renames it. Names are worth setting: they are what the cut targets
+  are labelled with.
+- **✕** deletes the body and the shapes that build it. Undo brings it back.
+- **＋ Body** starts an empty one and makes it active, so you can make the
+  part first and then build into it.
+
+A shape's own body is also on its **Body** row in the inspector, and every
+Cut or Keep has an **Applies to** row naming the bodies it reaches. The
+default is *All bodies*, so a model that never touches any of this behaves
+exactly as it did before bodies existed.
 
 Two things follow from a shape living in a body:
 
@@ -453,11 +467,9 @@ Two things follow from a shape living in a body:
 plane cut wants: make it once and every part you add afterwards gets its
 flat bottom for free.
 
-Bodies are derived, not managed: one exists as long as some Add builds it,
-and it disappears when the last one is deleted or moved away. A cut that
-named only that body is left pointing at nothing and goes inert — it is
-shown as `none` in the shape list rather than quietly widening to
-everything.
+Deleting a body leaves any cut that named only it pointing at nothing, and
+that cut goes inert — shown as `none` in the shape list rather than quietly
+widening to everything it was never aimed at.
 
 The badges in the shape list only appear once a model has two bodies, so
 single-part models stay as uncluttered as they were.
