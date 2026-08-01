@@ -556,6 +556,35 @@ readout shows the grid size before you commit. **JSON** copies the model
 out as text (or pastes one back in) — the portable backup, since local
 storage is per-browser.
 
+### Why the picture and the STL can disagree
+
+They find the surface in different ways, and the difference used to be
+visible: the exported part looked slightly eroded next to the viewport.
+
+The mesher is the accurate one. It interpolates the zero crossing exactly,
+and its error falls off with the square of the resolution — a 40.000 mm
+sphere comes out 39.987 mm at the default 0.5 mm and 39.997 mm at 0.25 mm.
+Nothing to worry about on a print.
+
+The *viewer* was the one telling fibs. Raymarching stops as soon as a ray
+gets close to the surface rather than on it, so whatever that tolerance is,
+the picture is drawn that far proud of the real surface — and because the
+tolerance scales with how far the ray has travelled, the model quietly
+fattened as you zoomed out. At arm's length it was about 0.2 mm on every
+face, and worse across blends and on the ellipsoid, where the field is a
+bound rather than a true distance and a given field value means more
+millimetres than it says.
+
+The tolerance is now loose only while a finger is down, and tightens as
+soon as the view settles — the same trick the render resolution already
+used. A settled picture sits about 0.04 mm proud, which is well under a
+layer. Dragging is unchanged, and so is the cost of it.
+
+If the number is what matters, though, neither of these is the place to
+read it: **the STL is the truth**, and the Size readout is the loosest of
+the three (it probes a coarse grid and bisects, and reads about 0.2 mm
+under on the ice cream cone).
+
 ## Adding a new utility later
 
 1. Write a function in `console.py` that does the work and returns a
