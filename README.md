@@ -356,11 +356,12 @@ the Python tools.
 On a phone the panel docks to the bottom half; one finger drags points,
 two fingers pan/zoom the drawing.
 
-Both files are also published on the website's **SDF EDITOR** section
-(`tools/sdf-editor.html` and `tools/sdf-editor-blob.html` in the
-`mywebsiterepository-Iknowtotallyoriginal` repo). Those are plain copies —
-this repo stays the source of truth, so edit here and re-copy after a
-change.
+The NURBS designer is also published on the website's **SDF EDITOR**
+section, as `tools/fish-editor-nurbs.html` in the
+`mywebsiterepository-Iknowtotallyoriginal` repo, alongside the general
+`sdf_editor.html` modeller. The blob designer is not published. Those are
+plain copies — this repo stays the source of truth, so edit here and
+re-copy after a change.
 
 ## Adding a new utility later
 
