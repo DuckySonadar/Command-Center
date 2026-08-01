@@ -435,10 +435,11 @@ after it are untouched — use ▲▼ to move a shape up or down the list.
 A body is one buildable part. The **Bodies** list sits above Shapes and is
 where you work with them:
 
-- **Tap a body** to make it the active one. New shapes are built into it,
-  and shapes belonging to anything else dim in the Shapes list, so you can
-  see at a glance what you are working on. Selecting a shape moves you into
-  its body, so the two lists stay in step.
+- **Tap a body** to select it — every shape it is made of — and to make it
+  the active one. New shapes are built into it, and shapes belonging to
+  anything else dim in the Shapes list, so you can see at a glance what you
+  are working on. Selecting a shape moves you into its body, so the two
+  lists stay in step.
 - **● / ○** hides a body. It leaves the viewport, the size readout and the
   STL — the way to see inside an assembly, or to print one part of it.
 - **✎** renames it. Names are worth setting: they are what the cut targets
@@ -497,21 +498,32 @@ how far a shape's influence reaches, which is otherwise guesswork.
 The button row above the shape list decides what a tap does:
 
 - **Single** — the tapped shape becomes the selection.
-- **Sticky** — the tapped shape is added to it, so you can gather several.
-- **Body** — tapping any shape selects everything that body is made of:
-  its own shapes *and* every cut or keep that reaches it, which is the same
-  set the model is folded from. Tapping a body in the Bodies list does the
-  same, and tapping a cut selects the body it acts on.
+- **Sticky** — tapping adds a shape, and tapping it again takes it back
+  out. That is the whole deselect story; the selection can be emptied
+  completely, and the inspector then says so rather than pretending
+  something is selected.
 
-**Hold a row** (about half a second) to take that shape back out of the
-selection; holding a body row removes all of its shapes. Holding is a
-deselect in every mode, and the selection can be emptied completely — the
-inspector then says so rather than pretending something is selected.
+To select a **body**, tap it in the Bodies list. That takes everything the
+body is made of — its own shapes *and* every cut or keep that reaches
+them, the same set the model is folded from. In Sticky mode it adds the
+body to what you already have, so bodies and loose shapes gather together.
 
 **Move** drags everything selected at once, and **Delete** removes all of
-it. The sliders still edit one shape — the last one you tapped, which the
-list marks with a bar down its edge and the inspector heading names as
-*Editing 1 of N selected*.
+it. With more than one shape selected the **Place** sliders drive the
+whole selection as one rigid piece: Position translates all of it, and
+Rotate turns it about the selection's centre — each shape orbits that
+centre and takes its own orientation with it. The size, blend and corner
+rows stay on a single shape, since there is no sensible way to resize a
+mixed bag of primitives together; that shape is the last one you tapped,
+marked in the list with a bar down its edge and named in the inspector
+heading as *Editing 1 of N selected*.
+
+The turn is a real rotation, not the same angle added to every shape.
+Adding angles happens to work about Z and quietly shears a group apart
+about X and Y, because the angles are stored as a Rz·Ry·Rx triple; the
+group rotation composes a proper world-axis matrix onto each shape and
+reads the triple back out, so distances inside the selection hold to
+floating-point precision.
 
 **Duplicate** copies one shape into the body it already belongs to. Select
 a whole body first, though, and it copies the lot into a **new** body —

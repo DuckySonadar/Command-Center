@@ -185,7 +185,6 @@
     <div class="seg" id="selSeg" style="margin-bottom:7px">
       <button data-s="single" class="on">Single</button>
       <button data-s="sticky">Sticky</button>
-      <button data-s="body">Body</button>
     </div>
     <div id="nodes"></div>
     <p id="selHint" style="color:var(--dim);font-size:11px;margin:6px 0 0"></p>
@@ -653,24 +652,16 @@ function primaryNode() {
 const bodyMembers = id =>
   nodes.filter(n => n.op === 'add' ? n.b === id : hits(n, id));
 
-// which body a tap in Body mode is about: an add says so itself, a cut is
-// taken to mean the body you are in if it reaches it, else its first target
-const bodyOf = n => n.op === 'add' ? n.b
-  : hits(n, activeBody) ? activeBody
-  : (n.tg && n.tg.length ? n.tg[0] : activeBody);
-
 function pickShape(n) {
-  if (selMode === 'body') {
-    const id = bodyOf(n);
-    picked = new Set(bodyMembers(id));
-    activeBody = id;
-  } else if (selMode === 'sticky') {
+  if (selMode === 'sticky') {
+    // sticky is a toggle: tapping something already in the selection is how
+    // you take it back out
+    if (picked.has(n)) { unpick(n); return; }
     picked.add(n);
-    if (n.op === 'add') activeBody = n.b;
   } else {
     picked = new Set([n]);
-    if (n.op === 'add') activeBody = n.b;
   }
+  if (n.op === 'add') activeBody = n.b;
   sel = nodes.indexOf(n);
 }
 
@@ -687,6 +678,83 @@ function unpick(n) {
   if (nodes[sel] === n) {
     const i = nodes.findIndex(x => picked.has(x));
     if (i >= 0) sel = i;
+  }
+}
+
+// ---------- moving a selection as one rigid piece ----------
+// Each shape keeps its own rotation, so turning a group means composing a
+// world-axis rotation onto every one of them *and* orbiting their positions
+// about the group's centre. Angles are stored as Rz*Ry*Rx Euler triples, so
+// the composed matrix has to be read back out in that same order — adding the
+// angle to each shape instead would only be a rigid turn about Z, and would
+// shear the group apart about X and Y.
+const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+const POSLIM = 150;                      // matches the Position sliders
+
+function eulerToM(r) {
+  const a = r[0] * D2R, b = r[1] * D2R, g = r[2] * D2R;
+  const ca = Math.cos(a), sa = Math.sin(a), cb = Math.cos(b), sb = Math.sin(b),
+        cg = Math.cos(g), sg = Math.sin(g);
+  return [cg * cb, cg * sb * sa - sg * ca, cg * sb * ca + sg * sa,
+          sg * cb, sg * sb * sa + cg * ca, sg * sb * ca - cg * sa,
+          -sb,     cb * sa,                cb * ca];
+}
+function mToEuler(m) {
+  const b = Math.asin(Math.min(Math.max(-m[6], -1), 1));
+  if (Math.abs(Math.cos(b)) > 1e-6)
+    return [Math.atan2(m[7], m[8]) * R2D, b * R2D, Math.atan2(m[3], m[0]) * R2D];
+  // gimbal lock: at ±90° pitch the roll and yaw axes coincide, so put the
+  // whole turn in roll rather than letting the two of them fight
+  return [Math.atan2(-m[5], m[4]) * R2D, b * R2D, 0];
+}
+function mMul(A, B) {
+  const o = new Array(9);
+  for (let r = 0; r < 3; r++)
+    for (let c = 0; c < 3; c++)
+      o[3 * r + c] = A[3 * r] * B[c] + A[3 * r + 1] * B[3 + c] + A[3 * r + 2] * B[6 + c];
+  return o;
+}
+function axisM(ax, deg) {
+  const c = Math.cos(deg * D2R), s = Math.sin(deg * D2R);
+  if (ax === 0) return [1, 0, 0, 0, c, -s, 0, s, c];
+  if (ax === 1) return [c, 0, s, 0, 1, 0, -s, 0, c];
+  return [c, -s, 0, s, c, 0, 0, 0, 1];
+}
+const mApply = (m, v) => [m[0] * v[0] + m[1] * v[1] + m[2] * v[2],
+                          m[3] * v[0] + m[4] * v[1] + m[5] * v[2],
+                          m[6] * v[0] + m[7] * v[1] + m[8] * v[2]];
+
+// what the group turns about: the mean of the selected shapes' own origins
+function selCentre() {
+  const c = [0, 0, 0];
+  for (const n of picked) { c[0] += n.p[0]; c[1] += n.p[1]; c[2] += n.p[2]; }
+  const k = picked.size || 1;
+  return [c[0] / k, c[1] / k, c[2] / k];
+}
+
+// Clamp the *shared* delta, not each shape: clamping them one at a time would
+// stop the ones that hit the limit while the rest kept going, and the group
+// would come apart at the edge of the build volume.
+function translateSelection(dx, dy, dz) {
+  if (!picked.size) return;
+  const d = [dx, dy, dz];
+  for (const n of picked)
+    for (let i = 0; i < 3; i++) {
+      d[i] = Math.min(d[i], POSLIM - n.p[i]);
+      d[i] = Math.max(d[i], -POSLIM - n.p[i]);
+    }
+  for (const n of picked)
+    for (let i = 0; i < 3; i++) n.p[i] += d[i];
+}
+
+function rotateSelection(ax, deg) {
+  if (!picked.size || !deg) return;
+  const D = axisM(ax, deg), C = selCentre();
+  for (const n of picked) {
+    const v = mApply(D, [n.p[0] - C[0], n.p[1] - C[1], n.p[2] - C[2]]);
+    for (let i = 0; i < 3; i++)
+      n.p[i] = Math.min(Math.max(C[i] + v[i], -POSLIM), POSLIM);
+    n.r = mToEuler(mMul(D, eulerToM(n.r)));
   }
 }
 
@@ -1271,11 +1339,7 @@ function screenAxes() {
 // Move drags the whole selection, which is the point of being able to make one
 function moveSelected(dx, dy, dz) {
   if (!picked.size) return;
-  const lim = v => Math.min(Math.max(v, -150), 150);   // matches the sliders
-  for (const n of picked) {
-    n.p[0] = lim(n.p[0] + dx); n.p[1] = lim(n.p[1] + dy);
-    n.p[2] = lim(n.p[2] + dz);
-  }
+  translateSelection(dx, dy, dz);
   refreshInspectorValues();
   save(); scheduleInfo();
 }
@@ -1364,27 +1428,6 @@ $('undoBtn').onclick = undo;
 $('undoBtn').disabled = true;
 $('viewBtn').onclick = frameModel;
 
-// ---------- long press ----------
-// Holding a row takes it out of the selection. Returns a probe the click
-// handler checks, so the press does not also count as a tap. Movement past a
-// few pixels means the sheet is being scrolled, not a row held.
-function onLongPress(el, fn) {
-  let timer = 0, fired = false, at = null;
-  const stop = () => { clearTimeout(timer); timer = 0; };
-  el.addEventListener('pointerdown', e => {
-    if (e.target.dataset && e.target.dataset.act) return;   // ●, ▲▼, ✎, ✕
-    fired = false;
-    at = [e.clientX, e.clientY];
-    timer = setTimeout(() => { fired = true; stop(); fn(); }, 500);
-  });
-  el.addEventListener('pointermove', e => {
-    if (timer && at && Math.hypot(e.clientX - at[0], e.clientY - at[1]) > 8) stop();
-  });
-  ['pointerup', 'pointerleave', 'pointercancel'].forEach(k =>
-    el.addEventListener(k, stop));
-  return () => fired;
-}
-
 $('selSeg').onclick = e => {
   const b = e.target.closest('button');
   if (!b) return;
@@ -1423,17 +1466,14 @@ function renderBodies() {
         bodies = bodies.filter(x => x.id !== b.id);
         sel = Math.max(0, Math.min(sel, nodes.length - 1));
         syncBodies(); syncPicked();
-      } else if (!heldBody()) {
+      } else {
+        // the body browser is the way to select a body: everything it is
+        // made of, its own shapes and the cuts that reach them
         activeBody = b.id;
-        // in Body mode the list is a selector as much as a switcher
-        if (selMode === 'body' || selMode === 'sticky') pickBody(b.id);
+        pickBody(b.id);
       }
       rebuildShader(); renderList(); renderInspector(); save(); needDraw();
     };
-    const heldBody = onLongPress(el, () => {
-      bodyMembers(b.id).forEach(unpick);
-      renderList(); renderInspector(); save(); needDraw();
-    });
     box.appendChild(el);
   });
   $('bodyCount').textContent = bodies.length;
@@ -1498,23 +1538,20 @@ function renderList() {
       } else if (act === 'down' && i < nodes.length - 1) {
         snapshot(); nodes.splice(i + 1, 0, nodes.splice(i, 1)[0]);
         sel = i + 1; rebuildShader();
-      } else if (!held()) {
+      } else {
         // picking a shape also moves you into its body, so the next shape you
         // add lands where you are looking
         pickShape(n);
       }
       renderList(); renderInspector(); save(); needDraw();
     };
-    const held = onLongPress(el, () => {
-      unpick(n);
-      renderList(); renderInspector(); save(); needDraw();
-    });
     box.appendChild(el);
   });
   $('nodeCount').textContent = nodes.length + '/' + MAXN;
-  $('selHint').textContent = picked.size
-    ? picked.size + ' selected · hold a row to deselect'
-    : 'Nothing selected · tap a shape';
+  $('selHint').textContent = picked.size > 1
+    ? picked.size + ' selected · Place moves and turns them as one'
+    : picked.size ? '1 selected'
+    : 'Nothing selected · tap a shape, or a body above';
   renderBodies();
   scheduleInfo();
 }
@@ -1693,15 +1730,29 @@ function renderInspector() {
   if (P.round)
     add(sliderRow('Corner round', ' mm', () => n.round, v => n.round = v, 0, 20, 0.25));
 
+  // With several shapes picked, Place drives the whole selection as one rigid
+  // piece: the slider still reads this shape's value, but what it applies is
+  // the *change* — translated straight through, or turned about the group's
+  // centre. The size and blend rows stay on this shape alone, since there is
+  // no sensible way to resize a mixed bag of primitives together.
+  const group = picked.size > 1;
   const ph = document.createElement('h3');
-  ph.textContent = 'Place';
+  ph.textContent = group ? `Place — ${picked.size} as one` : 'Place';
   host.appendChild(ph);
   ['X', 'Y', 'Z'].forEach((ax, i) =>
-    add(sliderRow('Position ' + ax, ' mm', () => n.p[i], v => n.p[i] = v,
-                  -150, 150, 0.5)));
+    add(sliderRow('Position ' + ax, ' mm', () => n.p[i],
+      group ? v => {
+        const d = [0, 0, 0];
+        d[i] = v - n.p[i];
+        translateSelection(d[0], d[1], d[2]);
+        refreshInspectorValues();
+      } : v => n.p[i] = v,
+      -150, 150, 0.5)));
   ['X', 'Y', 'Z'].forEach((ax, i) =>
-    add(sliderRow('Rotate ' + ax, '°', () => n.r[i], v => n.r[i] = v,
-                  -180, 180, 1)));
+    add(sliderRow('Rotate ' + ax, '°', () => n.r[i],
+      group ? v => { rotateSelection(i, v - n.r[i]); refreshInspectorValues(); }
+            : v => n.r[i] = v,
+      -180, 180, 1)));
 
   const mr = document.createElement('div');
   mr.className = 'row';
