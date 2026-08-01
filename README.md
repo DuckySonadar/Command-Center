@@ -358,18 +358,28 @@ two fingers pan/zoom the drawing.
 
 The NURBS designer is also published on the website's **SDF EDITOR**
 section, as `tools/fish-editor-nurbs.html` in the
-`mywebsiterepository-Iknowtotallyoriginal` repo, alongside the general
-`sdf_editor.html` modeller. The blob designer is not published. Those are
+`mywebsiterepository-Iknowtotallyoriginal` repo, alongside **MetaMeld**
+(`sdf_editor.html`). The blob designer is not published. Those are
 plain copies — this repo stays the source of truth, so edit here and
 re-copy after a change.
 
-## SDF editor (`sdf_editor.html`)
+## MetaMeld (`sdf_editor.html`)
 
 A self-contained modelling app for phones — one file, no server, no
 dependencies. You build a shape out of signed-distance primitives and it
 raymarches the result live on the GPU, then meshes the *same* field on the
 CPU to give you a printable binary STL. Units are millimeters, +Z is up and
 z = 0 is the build plate, same conventions as the flexi fish tools.
+
+It opens on a single-scoop ice cream cone: a cone tipped point-down with its
+apex under the plate, so the build-plate cut leaves a flat to stand on, and a
+scoop dropped into the rim and blended in. Three shapes, and between them
+they demonstrate most of what the tool does. **Starters** has the rest
+(Blob, Vase, Keytag, Bracket) and will replace whatever is on screen.
+
+The filename stays `sdf_editor.html` — it is the URL already live on the
+site and already saved to a Home Screen, and nothing in the app depends on
+what the file is called.
 
 ### Opening it on an iPhone
 
@@ -382,11 +392,13 @@ The file has to reach the phone somehow; the two easy routes are:
 - **AirDrop the file** to the phone and open it from Files. Safari runs it
   straight off local storage.
 
-Either way, use **Share → Add to Home Screen** once. It then launches
-full-screen with no browser chrome, which is the difference between a web
-page and something that feels like an app. Everything runs on the phone —
-there is no server to keep alive, and the model is kept in local storage,
-so closing the tab doesn't lose it.
+Either way, use **Share → Add to Home Screen** once. The shortcut is
+labelled *MetaMeld* and launches full-screen with no browser chrome, which
+is the difference between a web page and something that feels like an app.
+Everything runs on the phone — there is no server to keep alive, and the
+model is kept in local storage, so closing the tab doesn't lose it. (The
+storage key was renamed with the app; a model saved under the old key is
+picked up once and re-saved under the new one, so nothing is lost.)
 
 ### Putting it on the website
 
@@ -420,11 +432,25 @@ after it are untouched — use ▲▼ to move a shape up or down the list.
 
 ### Bodies
 
-A body is one buildable part. Every Add belongs to one — its **Body** row
-in the inspector, with **＋ New body** to start another — and every Cut or
-Keep has an **Applies to** row naming the bodies it reaches. The default
-is *All bodies*, so a model that never touches any of this behaves exactly
-as it did before bodies existed.
+A body is one buildable part. The **Bodies** list sits above Shapes and is
+where you work with them:
+
+- **Tap a body** to make it the active one. New shapes are built into it,
+  and shapes belonging to anything else dim in the Shapes list, so you can
+  see at a glance what you are working on. Selecting a shape moves you into
+  its body, so the two lists stay in step.
+- **● / ○** hides a body. It leaves the viewport, the size readout and the
+  STL — the way to see inside an assembly, or to print one part of it.
+- **✎** renames it. Names are worth setting: they are what the cut targets
+  are labelled with.
+- **✕** deletes the body and the shapes that build it. Undo brings it back.
+- **＋ Body** starts an empty one and makes it active, so you can make the
+  part first and then build into it.
+
+A shape's own body is also on its **Body** row in the inspector, and every
+Cut or Keep has an **Applies to** row naming the bodies it reaches. The
+default is *All bodies*, so a model that never touches any of this behaves
+exactly as it did before bodies existed.
 
 Two things follow from a shape living in a body:
 
@@ -441,11 +467,9 @@ Two things follow from a shape living in a body:
 plane cut wants: make it once and every part you add afterwards gets its
 flat bottom for free.
 
-Bodies are derived, not managed: one exists as long as some Add builds it,
-and it disappears when the last one is deleted or moved away. A cut that
-named only that body is left pointing at nothing and goes inert — it is
-shown as `none` in the shape list rather than quietly widening to
-everything.
+Deleting a body leaves any cut that named only it pointing at nothing, and
+that cut goes inert — shown as `none` in the shape list rather than quietly
+widening to everything it was never aimed at.
 
 The badges in the shape list only appear once a model has two bodies, so
 single-part models stay as uncluttered as they were.
@@ -458,9 +482,34 @@ below roughly two voxels of the STL resolution it closes up and the parts
 come out welded.
 
 **Orbit** mode: one finger orbits, two fingers pinch and pan. **Move**
-mode: one finger slides the selected shape across the screen plane, two
-fingers raise and lower it. ⤢ frames the model in whatever strip of screen
-the sheet leaves visible. Drag or tap the grip to resize the sheet.
+mode: one finger slides the selection across the screen plane, two fingers
+raise and lower it. ⤢ frames the model in whatever strip of screen the
+sheet leaves visible. Drag or tap the grip to resize the sheet.
+
+### Selecting
+
+Selected shapes turn **blue** in the viewport, and because shapes blend
+into each other the blue is mixed with the same weight the distance is —
+so where a selected shape melts into an unselected one, the colour fades
+across the blend instead of stopping at a hard line. It shows you exactly
+how far a shape's influence reaches, which is otherwise guesswork.
+
+The button row above the shape list decides what a tap does:
+
+- **Single** — the tapped shape becomes the selection.
+- **Sticky** — the tapped shape is added to it, so you can gather several.
+- **Body** — tapping any shape selects every shape in its body. Tapping a
+  body in the Bodies list does the same.
+
+**Hold a row** (about half a second) to take that shape back out of the
+selection; holding a body row removes all of its shapes. Holding is a
+deselect in every mode, and the selection can be emptied completely — the
+inspector then says so rather than pretending something is selected.
+
+**Move** drags everything selected at once, and **Delete** removes all of
+it. The sliders still edit one shape — the last one you tapped, which the
+list marks with a bar down its edge and the inspector heading names as
+*Editing 1 of N selected*.
 
 ### Getting it out
 
