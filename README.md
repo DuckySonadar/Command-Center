@@ -356,6 +356,71 @@ the Python tools.
 On a phone the panel docks to the bottom half; one finger drags points,
 two fingers pan/zoom the drawing.
 
+## SDF editor (`sdf_editor.html`)
+
+A self-contained modelling app for phones — one file, no server, no
+dependencies. You build a shape out of signed-distance primitives and it
+raymarches the result live on the GPU, then meshes the *same* field on the
+CPU to give you a printable binary STL. Units are millimeters, +Z is up and
+z = 0 is the build plate, same conventions as the flexi fish tools.
+
+### Opening it on an iPhone
+
+The file has to reach the phone somehow; the two easy routes are:
+
+- **Over the local network.** From the repo folder run
+  `python3 -m http.server 8000`, then on the phone (same Wi-Fi) open
+  `http://<your-mac's-IP>:8000/sdf_editor.html`. The IP is in System
+  Settings → Wi-Fi → Details.
+- **AirDrop the file** to the phone and open it from Files. Safari runs it
+  straight off local storage.
+
+Either way, use **Share → Add to Home Screen** once. It then launches
+full-screen with no browser chrome, which is the difference between a web
+page and something that feels like an app. Everything runs on the phone —
+there is no server to keep alive, and the model is kept in local storage,
+so closing the tab doesn't lose it.
+
+### Modelling
+
+A model is an ordered list of shapes, each applied to what came before:
+
+- **Add** fuses the shape in, **Cut** removes it, **Keep** intersects.
+- **Blend** rounds the join with a smooth min instead of a hard crease —
+  0 mm is a sharp edge, a few mm is a fillet. It applies to all three
+  operations, so you get soft cuts too.
+- **Mirror X/Y/Z** repeats the shape across that plane, which is how you
+  place symmetric features (bolt holes, fins) once instead of twice.
+- Primitives: sphere, box, cylinder, capsule, torus, cone (separate base
+  and top radii — set the top to 0 for a point), ellipsoid, and a
+  **plane cut**. An unrotated plane cut at z = 0 keeps everything above
+  the plate, which is the flat-bottom trick every print-in-place part
+  wants. The readout warns when the model reaches below the plate.
+
+Order matters: a Cut only removes what is already there, so shapes added
+after it are untouched — use ▲▼ to move a shape up or down the list.
+
+**Orbit** mode: one finger orbits, two fingers pinch and pan. **Move**
+mode: one finger slides the selected shape across the screen plane, two
+fingers raise and lower it. ⤢ frames the model in whatever strip of screen
+the sheet leaves visible. Drag or tap the grip to resize the sheet.
+
+### Getting it out
+
+**Save STL** sweeps the real field on a grid (the resolution slider, 0.5 mm
+by default) and runs the same surface-nets mesher the Python tools use.
+It's evaluated a slice at a time between frames, so the phone stays
+responsive and iOS never offers to kill the tab. On iOS the finished file
+goes to the share sheet — Files, AirDrop, or straight into a slicer app.
+Since the build spans several frames iOS has forgotten the tap by the time
+it finishes and may refuse the share; the STL is kept, so tapping **Save
+STL** again hands it over instantly.
+
+Grids are capped at 14 M voxels on a touch device and 40 M elsewhere; the
+readout shows the grid size before you commit. **JSON** copies the model
+out as text (or pastes one back in) — the portable backup, since local
+storage is per-browser.
+
 ## Adding a new utility later
 
 1. Write a function in `console.py` that does the work and returns a
