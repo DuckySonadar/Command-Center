@@ -45,6 +45,10 @@
                 font-size:13px; cursor:pointer; font-family:inherit;
                 min-height:38px; }
   .seg button.on { background:var(--acc); color:#181818; font-weight:600; }
+  /* text, not a button: the tool's own controls should win the top bar */
+  #back { color:var(--dim); text-decoration:none; font-size:12.5px;
+          padding:8px 2px; white-space:nowrap; }
+  #back:hover, #back:focus-visible { color:var(--acc); }
   #errbar { position:fixed; top:calc(env(safe-area-inset-top) + 52px);
             left:50%; transform:translateX(-50%); background:#4a1520;
             color:#ffb3b3; border:1px solid #7a2535; border-radius:8px;
@@ -132,6 +136,7 @@
 <canvas id="view"></canvas>
 
 <div id="topbar">
+  <a id="back" href="https://josiahsmakercave.xyz/">‹ Maker Cave</a>
   <div class="seg" id="modeSeg">
     <button data-mode="orbit" class="on">Orbit</button>
     <button data-mode="grab">Move</button>

@@ -381,6 +381,17 @@ page and something that feels like an app. Everything runs on the phone —
 there is no server to keep alive, and the model is kept in local storage,
 so closing the tab doesn't lose it.
 
+### Putting it on the website
+
+It's one file with no external references, so it needs no build step and no
+server logic: copy `sdf_editor.html` into the website repo and it is live at
+`josiahsmakercave.xyz/sdf_editor.html`. Any path works — nothing in the file
+is path-relative. The top bar carries a **‹ Maker Cave** link home.
+
+The page is deliberately full-screen (fixed viewport, no page scroll) —
+that's what makes it usable on a phone — so it wants to be its own page
+rather than sitting inside the site's normal header/footer layout.
+
 ### Modelling
 
 A model is an ordered list of shapes, each applied to what came before:
