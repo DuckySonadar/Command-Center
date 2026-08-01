@@ -932,6 +932,11 @@ uniform float uFocal;
 uniform vec4 uD[${MAXN * 3}];
 uniform vec3 uTint;
 uniform vec3 uSelTint;
+// x*t + y: how close a ray has to get before it counts as a hit. Sphere
+// tracing stops *near* the surface, not on it, so this is exactly how far
+// proud of the real d=0 surface the picture is drawn. Loose while a finger
+// is down, tight once the view settles.
+uniform vec2 uHit;
 
 // How much of the *accumulated* side survives a smin/smax. The colour has to
 // be mixed with the same weight the distance is, or the blue would sit off
@@ -1006,9 +1011,9 @@ void main(){
   // model
   float t = 0.0, tMax = 2000.0;
   bool hit = false;
-  for (int i = 0; i < 190; i++){
+  for (int i = 0; i < 260; i++){
     float d = map(ro + rd*t);
-    if (d < 0.0015*t + 0.004) { hit = true; break; }
+    if (d < uHit.x*t + uHit.y) { hit = true; break; }
     // neither smin nor the ellipsoid bound is a true distance: full steps
     // tunnel through thin blended shoulders and leave banding behind
     t += d*0.72;
@@ -1119,7 +1124,7 @@ function rebuildShader() {
   if (prog) gl.deleteProgram(prog);
   prog = np;
   U = {};
-  for (const k of ['uRes', 'uEye', 'uCam', 'uFocal', 'uTint', 'uSelTint'])
+  for (const k of ['uRes', 'uEye', 'uCam', 'uFocal', 'uTint', 'uSelTint', 'uHit'])
     U[k] = gl.getUniformLocation(prog, k);
   U.uD = gl.getUniformLocation(prog, 'uD[0]');
   errbar.style.display = 'none';
@@ -1303,6 +1308,9 @@ function draw() {
   gl.uniform1f(U.uFocal, 0.5 / TAN_HALF_FOV);
   gl.uniform3f(U.uTint, 0.91, 0.53, 0.22);
   gl.uniform3f(U.uSelTint, 0.24, 0.60, 0.95);
+  // the settled picture is worth matching the STL; the dragged one is not
+  if (interacting) gl.uniform2f(U.uHit, 0.0015, 0.004);
+  else             gl.uniform2f(U.uHit, 0.0004, 0.002);
   gl.uniform4fv(U.uD, uData);
   gl.bindVertexArray(emptyVAO);
   gl.drawArrays(gl.TRIANGLES, 0, 3);
