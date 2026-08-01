@@ -230,6 +230,7 @@ gets any slimmer.
 | `sdf_json.py` | reads a scene from the repo's `sdf_editor.html` and evaluates it as an SDF, so the owner's own model can be measured directly instead of paraphrased |
 | `check_against_editor.py` | **proves `sdf_json.py` agrees with the editor** — lifts the editor's own `PRIMS` / `smin` / `invRot` / `sceneSDF` out of the HTML, runs them under node, and compares. Currently 1.9e-7 max error, 100% sign agreement over 4000 points |
 | `owner_joint.json` | the owner's two-segment reference joint, and the thing the generator is meant to reproduce |
+| `describe_scene.py` | **what a scene is actually made of**: node order per body, how far the segments interleave, and how the seam cavity sits against the rings it passes through |
 | `flexifish_rings_WIP.py` | full `flexifish.py` with rings swapped in |
 | `flexifish_rings.diff` | that same work as a unified diff against this branch's `flexifish.py` |
 | `ring_pair.stl` / `.png` | a standalone linked pair, meshed and verified as 2 manifold shells. Printable on its own as a feel test |
@@ -243,6 +244,7 @@ python3 check_joints.py     # every joint of the default fish  (<1 s)
 python3 check_swing.py 1    # range of motion at the middle joint  (~11 s)
 python3 check_print.py 1    # islands at the middle joint  (~10 s)
 python3 check_against_editor.py          # reader vs the editor  (~2 s, needs node)
+python3 describe_scene.py                # structure of the reference joint  (~1 min)
 python3 flexifish_rings_WIP.py --out rings.stl --coupon   # ~3.5 min
 ```
 
@@ -334,6 +336,58 @@ moved from the body face to the rings, which is the end stop the design
 wants.
 
 ---
+
+## Porting the reference joint: what has to change
+
+`owner_joint.json` is the target. Three things about it are structural, not
+cosmetic, and each one breaks an assumption the generator is built on.
+
+**1. Node order is load-bearing.** Each segment is built in this sequence:
+
+```
+ADD  vertical ring   k = 0        <- first, so both cuts apply to it
+ADD  body blob       k = 11
+CUT  ring relief     k = 1.5
+CUT  seam cavity     k = 2.75
+ADD  tilted ring     k = 3.5      <- last, so neither cut touches it
+CUT  build plate     k = 1.75     (global)
+```
+
+The seam cavity's surface passes 12.4 mm *inside* the tilted ring's
+centreline — it would swallow the ring whole — and does no damage, because the
+ring is unioned after it. That is the whole trick, and it is what makes a
+body-scale dish possible at all. The vertical ring is added first and so wears
+the relief cut, which is the scallop measured earlier. The asymmetry is the
+design, not an oversight.
+
+**2. The joint is a socket, not a butt joint.** The two segments interleave
+over 18.5 mm of body length: body 2 spans y −32.5…21, body 3 spans 2.5…56.
+Neither ends in a face at a station. The generator cuts both segments at a
+plane through the joint, which cannot express this.
+
+**3. The cavity is a clearance envelope, not an offset of the mating nose.**
+Measured over the facing region, the distance from the cavity surface to the
+next blob's surface ranges over 18 mm — so "dilate the nose by the gap" is the
+wrong rule. What it has to satisfy is weaker and local: clear the nose by at
+least the gap, terminate the segment before the next joint, and stay off the
+ring that was added before it. The dish is also *tighter* than the nose it
+receives (pole radius 18.4 mm against 22.1 mm in z), so they meet near a point
+rather than conforming — which is what stops the seam binding as it yaws.
+
+Reference proportions, for whatever the generator ends up deriving them from:
+
+| | value | as a fraction of the blob |
+|---|---|---|
+| cavity semi-axes | 18.5, 31.25, 24.0 | 0.90 x, 1.23 y, 1.01 z |
+| cavity centre vs blob centre | (0, +24, −5) | +0.94 semi-y, −0.21 semi-z |
+| cavity front pole | 7.25 mm ahead of the blob centre | |
+
+The open question is what those derive from once the body tapers. The blob
+does not exist in the generator — the body is one continuous blended field —
+so the cavity has to come from the local section instead (`halfwidth_at` and
+`top_at` already measure it). Copying the ratios above is not enough on its
+own, because segment length and body section vary independently along the
+fish, and the three constraints above are what actually have to hold.
 
 ## What is left
 
