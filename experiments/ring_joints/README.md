@@ -169,6 +169,16 @@ written from a guess at what the owner's "fused / consumed edges" sketch was
 asking for, and that guess is unconfirmed. At 0 the build is identical to the
 plain-union version.
 
+Both settings build clean:
+
+```
+ring_fillet = 0.0   614946 tris, manifold, shells = 8 (expected 8)
+ring_fillet = 0.8   614694 tris, manifold, shells = 8 (expected 8)
+```
+
+and at 0.8 the joints pass, the coupon is 2 shells at 0.30 / 0.20 / 0.16 mm,
+swing first contact is 16-20 deg and the largest print island is 0.06 mm3.
+
 Two things it turned up that are worth keeping either way:
 
 - **The relief has to be carved after the ring is welded, not before.**
