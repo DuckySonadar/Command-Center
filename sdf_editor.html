@@ -647,23 +647,35 @@ function primaryNode() {
   if (i >= 0) { sel = i; return nodes[i]; }
   return null;
 }
-const bodyShapes = id => nodes.filter(n => n.op === 'add' && n.b === id);
+// Everything a body is made of: its own adds plus every cut or keep that
+// reaches it — the same set buildPlan folds to get the body's field. Picking
+// only the adds left the cuts behind, which is not what "select body" means.
+const bodyMembers = id =>
+  nodes.filter(n => n.op === 'add' ? n.b === id : hits(n, id));
+
+// which body a tap in Body mode is about: an add says so itself, a cut is
+// taken to mean the body you are in if it reaches it, else its first target
+const bodyOf = n => n.op === 'add' ? n.b
+  : hits(n, activeBody) ? activeBody
+  : (n.tg && n.tg.length ? n.tg[0] : activeBody);
 
 function pickShape(n) {
-  if (selMode === 'body' && n.op === 'add') {
-    const list = bodyShapes(n.b);
-    picked = new Set(list);
+  if (selMode === 'body') {
+    const id = bodyOf(n);
+    picked = new Set(bodyMembers(id));
+    activeBody = id;
   } else if (selMode === 'sticky') {
     picked.add(n);
+    if (n.op === 'add') activeBody = n.b;
   } else {
     picked = new Set([n]);
+    if (n.op === 'add') activeBody = n.b;
   }
   sel = nodes.indexOf(n);
-  if (n.op === 'add') activeBody = n.b;
 }
 
 function pickBody(id) {
-  const list = bodyShapes(id);
+  const list = bodyMembers(id);
   if (selMode === 'sticky') list.forEach(n => picked.add(n));
   else picked = new Set(list);
   if (list.length) sel = nodes.indexOf(list[0]);
@@ -705,13 +717,16 @@ function buildPlan(list) {
 // the flat-belly cut every print-in-place part wants.
 const STARTERS = {
   // The opening model. Cone tipped point-down with its apex 3 mm under the
-  // plate, so the plane cut leaves a ~8 mm flat to stand on instead of the
-  // point it would otherwise balance on. The scoop sits 8 mm down inside the
-  // rim and blends in, so the two print as one piece.
+  // plate, so the plane cut leaves a flat to stand on instead of the point it
+  // would otherwise balance on. A squashed ellipsoid for the scoop, and a
+  // torus blended over the join for the cone's rolled rim. The plate cut is
+  // soft (2.75 mm) so the tip meets the plate in a fillet rather than a knife
+  // edge — kinder to a first layer.
   'Ice cream': [
+    makeNode('ellipsoid', { p: [0, 0, 50.5], d: [35, 35, 28.5] }),
     makeNode('cone', { p: [0, 0, 19], d: [3, 17, 44], round: 1 }),
-    makeNode('sphere', { p: [0, 0, 52], d: [19, 0, 0], k: 3 }),
-    makeNode('plane', { op: 'cut', p: [0, 0, 0] })
+    makeNode('torus', { p: [0, 0, 44.5], d: [16.5, 5, 0], k: 1.25 }),
+    makeNode('plane', { op: 'cut', p: [0, 0, 0], k: 2.75 })
   ],
   'Blob': [
     makeNode('sphere', { p: [0, 0, 16], d: [16, 0, 0], k: 8 }),
@@ -784,7 +799,8 @@ function adopt(doc) {
     else if (n.tg && !Array.isArray(n.tg)) n.tg = null;
     if (Array.isArray(n.tg)) n.tg = n.tg.filter(id => typeof id === 'number');
   }
-  syncBodies(); resetPicked();
+  syncBodies();
+  picked = new Set();   // open showing the model, not a selection
   return true;
 }
 
@@ -803,7 +819,7 @@ if (!load()) {
   bodies = [{ id: 0, name: 'Body 1', on: true }];
   activeBody = 0;
   sel = 0;
-  resetPicked();
+  picked = new Set();
 }
 
 // ======================================================================
@@ -1415,7 +1431,7 @@ function renderBodies() {
       rebuildShader(); renderList(); renderInspector(); save(); needDraw();
     };
     const heldBody = onLongPress(el, () => {
-      bodyShapes(b.id).forEach(unpick);
+      bodyMembers(b.id).forEach(unpick);
       renderList(); renderInspector(); save(); needDraw();
     });
     box.appendChild(el);
@@ -1818,14 +1834,67 @@ $('addBtn').onclick = () => {
       };
     });
 };
+const clone = n => JSON.parse(JSON.stringify(n));
+const nudge = c => { c.p[0] = Math.min(c.p[0] + 10, 150); return c; };
+
 $('dupBtn').onclick = () => {
-  if (!nodes[sel] || nodes.length >= MAXN) return;
+  if (!picked.size) return;
+  const src = nodes.filter(n => picked.has(n));    // in list order
+
+  // one shape: copy it beside itself, in the body it already belongs to
+  if (src.length === 1) {
+    if (nodes.length >= MAXN) { showErr('Shape limit is ' + MAXN); return; }
+    snapshot();
+    const c = nudge(clone(src[0]));
+    nodes.splice(sel + 1, 0, c);
+    sel++;
+    resetPicked();
+    rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+    return;
+  }
+
+  // several: this is a body being copied, so the copies become a body of
+  // their own — dropping them into the source body would just bury them
+  // inside the shape they were copied from.
+  const from = [...new Set(src.filter(n => n.op === 'add').map(n => n.b))];
+  if (!from.length) { showErr('Nothing to duplicate — no shapes, only cuts'); return; }
+
+  // A cut that named only bodies being copied comes along, repointed at the
+  // copies. One that was already global reaches the new bodies anyway, so
+  // copying it would just double up; one that also names a body staying put
+  // would have the copy cutting the original, so neither is brought over.
+  const carried = src.filter(n =>
+    n.op === 'add' || (n.tg && n.tg.length && n.tg.every(t => from.includes(t))));
+  if (nodes.length + carried.length > MAXN) {
+    showErr('Shape limit is ' + MAXN + ' — that copy needs ' + carried.length);
+    return;
+  }
+
   snapshot();
-  const c = JSON.parse(JSON.stringify(nodes[sel]));
-  c.p[0] += 10;
-  nodes.splice(sel + 1, 0, c);
-  sel++;
-  resetPicked();
+  const toNew = new Map();
+  for (const oldId of from) {
+    const id = addBody();
+    const nb = bodies.find(x => x.id === id);
+    if (nb) nb.name = (bodyName(oldId) + ' copy').slice(0, 24);
+    toNew.set(oldId, id);
+  }
+  const made = carried.map(n => {
+    const c = nudge(clone(n));
+    if (c.op === 'add') c.b = toNew.get(n.b);
+    else c.tg = n.tg.map(t => toNew.get(t));
+    return c;
+  });
+  // Slot the copies in right after the source body's last add, not at the end
+  // of the list: a cut only reaches what is above it, so appending would drop
+  // the copies below the build-plate cut and leave them without a flat bottom.
+  let at = 0;
+  for (const n of src)
+    if (n.op === 'add') at = Math.max(at, nodes.indexOf(n) + 1);
+  nodes.splice(at, 0, ...made);
+  activeBody = toNew.get(from[0]);
+  picked = new Set(made);
+  sel = nodes.indexOf(made[0]);
+  syncBodies();
   rebuildShader(); renderList(); renderInspector(); save(); needDraw();
 };
 $('delBtn').onclick = () => {
@@ -1868,7 +1937,7 @@ $('startBtn').onclick = () => {
         activeBody = 0;
         syncBodies();
         sel = 0;
-        resetPicked();
+        picked = new Set();
         closeModal();
         rebuildShader(); renderList(); renderInspector(); save();
         frameModel();

@@ -498,8 +498,10 @@ The button row above the shape list decides what a tap does:
 
 - **Single** — the tapped shape becomes the selection.
 - **Sticky** — the tapped shape is added to it, so you can gather several.
-- **Body** — tapping any shape selects every shape in its body. Tapping a
-  body in the Bodies list does the same.
+- **Body** — tapping any shape selects everything that body is made of:
+  its own shapes *and* every cut or keep that reaches it, which is the same
+  set the model is folded from. Tapping a body in the Bodies list does the
+  same, and tapping a cut selects the body it acts on.
 
 **Hold a row** (about half a second) to take that shape back out of the
 selection; holding a body row removes all of its shapes. Holding is a
@@ -510,6 +512,21 @@ inspector then says so rather than pretending something is selected.
 it. The sliders still edit one shape — the last one you tapped, which the
 list marks with a bar down its edge and the inspector heading names as
 *Editing 1 of N selected*.
+
+**Duplicate** copies one shape into the body it already belongs to. Select
+a whole body first, though, and it copies the lot into a **new** body —
+dropping the copies into the source body would only bury them inside the
+shapes they came from. The copy is offset 10 mm in x and named after its
+source (*Body 1 copy*).
+
+Two details it gets right, both of which are easy to get wrong by hand.
+A cut that named only the body being copied comes along, repointed at the
+copy, so the new part is carved the same way; a cut that was already
+global reaches the copy anyway and is left alone rather than doubled up.
+And the copies are slotted in directly after the source body's last shape
+rather than appended — a cut only reaches what is above it, so appending
+would drop them below the build-plate cut and leave the copy with no flat
+bottom.
 
 ### Getting it out
 
