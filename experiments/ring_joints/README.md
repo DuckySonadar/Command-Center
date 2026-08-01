@@ -227,6 +227,9 @@ gets any slimmer.
 | `check_joints.py` | **the joints the generator actually sizes**: linked, clearances, floor and lip thicknesses, and the pierce test on the built field |
 | `check_swing.py` | **range of motion**: yaws the rear segment and reports where it first touches, and whether the stop is the rings or the seam |
 | `check_print.py` | **island check**: walks the coupon layer by layer looking for material that starts in mid-air. This is the long-deferred overhang audit, and it is what caught the ring leaning the wrong way |
+| `sdf_json.py` | reads a scene from the repo's `sdf_editor.html` and evaluates it as an SDF, so the owner's own model can be measured directly instead of paraphrased |
+| `check_against_editor.py` | **proves `sdf_json.py` agrees with the editor** — lifts the editor's own `PRIMS` / `smin` / `invRot` / `sceneSDF` out of the HTML, runs them under node, and compares. Currently 1.9e-7 max error, 100% sign agreement over 4000 points |
+| `owner_joint.json` | the owner's two-segment reference joint, and the thing the generator is meant to reproduce |
 | `flexifish_rings_WIP.py` | full `flexifish.py` with rings swapped in |
 | `flexifish_rings.diff` | that same work as a unified diff against this branch's `flexifish.py` |
 | `ring_pair.stl` / `.png` | a standalone linked pair, meshed and verified as 2 manifold shells. Printable on its own as a feel test |
@@ -239,6 +242,7 @@ python3 v2.py               # the "no fit" negative result, for context
 python3 check_joints.py     # every joint of the default fish  (<1 s)
 python3 check_swing.py 1    # range of motion at the middle joint  (~11 s)
 python3 check_print.py 1    # islands at the middle joint  (~10 s)
+python3 check_against_editor.py          # reader vs the editor  (~2 s, needs node)
 python3 flexifish_rings_WIP.py --out rings.stl --coupon   # ~3.5 min
 ```
 
