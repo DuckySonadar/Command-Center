@@ -356,6 +356,12 @@ the Python tools.
 On a phone the panel docks to the bottom half; one finger drags points,
 two fingers pan/zoom the drawing.
 
+Both files are also published on the website's **SDF EDITOR** section
+(`tools/sdf-editor.html` and `tools/sdf-editor-blob.html` in the
+`mywebsiterepository-Iknowtotallyoriginal` repo). Those are plain copies —
+this repo stays the source of truth, so edit here and re-copy after a
+change.
+
 ## Adding a new utility later
 
 1. Write a function in `console.py` that does the work and returns a
