@@ -8,8 +8,10 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<!-- names the Home Screen shortcut; without it iOS uses the whole title -->
+<meta name="apple-mobile-web-app-title" content="MetaMeld">
 <meta name="theme-color" content="#101418">
-<title>SDF editor</title>
+<title>MetaMeld</title>
 <style>
   :root { --bg:#101418; --panel:#1a2027f2; --ink:#dfe7ee; --dim:#8fa0af;
           --acc:#f0913b; --err:#ff6b6b; --note:#ffc857; --sel:#5ec8f0;
@@ -49,6 +51,11 @@
   #back { color:var(--dim); text-decoration:none; font-size:12.5px;
           padding:8px 2px; white-space:nowrap; }
   #back:hover, #back:focus-visible { color:var(--acc); }
+  /* full-screen off the Home Screen there is no tab to read the name from */
+  #brand { color:var(--ink); font-size:13px; font-weight:600;
+           letter-spacing:.02em; white-space:nowrap; padding:8px 0; }
+  /* a phone needs the width for the controls, and its shortcut is labelled */
+  @media (max-width:560px) { #brand { display:none; } }
   #errbar { position:fixed; top:calc(env(safe-area-inset-top) + 52px);
             left:50%; transform:translateX(-50%); background:#4a1520;
             color:#ffb3b3; border:1px solid #7a2535; border-radius:8px;
@@ -141,6 +148,7 @@
 
 <div id="topbar">
   <a id="back" href="https://josiahsmakercave.xyz/">‹ Maker Cave</a>
+  <span id="brand">MetaMeld</span>
   <div class="seg" id="modeSeg">
     <button data-mode="orbit" class="on">Orbit</button>
     <button data-mode="grab">Move</button>
@@ -539,7 +547,8 @@ try {
 // ======================================================================
 // document / state
 // ======================================================================
-const STORE = 'sdf_editor_doc_v1';
+const STORE = 'metameld_doc_v1';
+const STORE_OLD = 'sdf_editor_doc_v1';   // pre-rename; read once, then migrated
 let nodes = [], sel = 0, undoStack = [];
 
 function makeNode(type, over) {
@@ -610,6 +619,15 @@ function buildPlan(list) {
 // A Plane cut with no rotation keeps everything above its own z — that is
 // the flat-belly cut every print-in-place part wants.
 const STARTERS = {
+  // The opening model. Cone tipped point-down with its apex 3 mm under the
+  // plate, so the plane cut leaves a ~8 mm flat to stand on instead of the
+  // point it would otherwise balance on. The scoop sits 8 mm down inside the
+  // rim and blends in, so the two print as one piece.
+  'Ice cream': [
+    makeNode('cone', { p: [0, 0, 19], d: [3, 17, 44], round: 1 }),
+    makeNode('sphere', { p: [0, 0, 52], d: [19, 0, 0], k: 3 }),
+    makeNode('plane', { op: 'cut', p: [0, 0, 0] })
+  ],
   'Blob': [
     makeNode('sphere', { p: [0, 0, 16], d: [16, 0, 0], k: 8 }),
     makeNode('capsule', { p: [22, 0, 12], r: [0, 90, 0], d: [8, 44, 0], k: 8 }),
@@ -679,13 +697,16 @@ function adopt(doc) {
 
 function load() {
   try {
-    const d = JSON.parse(localStorage.getItem(STORE) || 'null');
+    // fall back to the pre-rename key so nobody loses the model they were
+    // working on; the next save writes it under the new one
+    const raw = localStorage.getItem(STORE) || localStorage.getItem(STORE_OLD);
+    const d = JSON.parse(raw || 'null');
     if (adopt(d)) { sel = Math.min(d.sel || 0, nodes.length - 1); return true; }
   } catch (e) {}
   return false;
 }
 if (!load()) {
-  nodes = JSON.parse(JSON.stringify(STARTERS['Blob']));
+  nodes = JSON.parse(JSON.stringify(STARTERS['Ice cream']));
   bodies = [{ id: 0, name: 'Body 1' }];
   sel = 0;
 }
@@ -1641,8 +1662,8 @@ $('stlBtn').onclick = () => {
   // forgotten the tap and refuses the share sheet. Keep the blob: this second
   // tap is a fresh gesture, and handing it over now always works.
   if (cached && cached.key === stlKey(res)) {
-    deliver(cached.blob, 'sdf_model.stl');
-    setStatus('sent sdf_model.stl');
+    deliver(cached.blob, 'metameld_model.stl');
+    setStatus('sent metameld_model.stl');
     return;
   }
   const pad = 2 * res;
@@ -1693,12 +1714,12 @@ $('stlBtn').onclick = () => {
       building = false; $('stlBtn').disabled = false; setStatus('');
       return;
     }
-    const blob = meshToSTL(mesh, 'sdf editor model (mm)');
+    const blob = meshToSTL(mesh, 'MetaMeld model (mm)');
     cached = { key: stlKey(res), blob };
     building = false; $('stlBtn').disabled = false;
     setStatus(nt.toLocaleString() + ' triangles · ' +
               ((Date.now() - t0) / 1000).toFixed(1) + ' s');
-    deliver(blob, 'sdf_model.stl', () =>
+    deliver(blob, 'metameld_model.stl', () =>
       setStatus(nt.toLocaleString() + ' triangles ready — tap Save STL again'));
   };
   requestAnimationFrame(step);

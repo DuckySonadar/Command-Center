@@ -358,18 +358,28 @@ two fingers pan/zoom the drawing.
 
 The NURBS designer is also published on the website's **SDF EDITOR**
 section, as `tools/fish-editor-nurbs.html` in the
-`mywebsiterepository-Iknowtotallyoriginal` repo, alongside the general
-`sdf_editor.html` modeller. The blob designer is not published. Those are
+`mywebsiterepository-Iknowtotallyoriginal` repo, alongside **MetaMeld**
+(`sdf_editor.html`). The blob designer is not published. Those are
 plain copies — this repo stays the source of truth, so edit here and
 re-copy after a change.
 
-## SDF editor (`sdf_editor.html`)
+## MetaMeld (`sdf_editor.html`)
 
 A self-contained modelling app for phones — one file, no server, no
 dependencies. You build a shape out of signed-distance primitives and it
 raymarches the result live on the GPU, then meshes the *same* field on the
 CPU to give you a printable binary STL. Units are millimeters, +Z is up and
 z = 0 is the build plate, same conventions as the flexi fish tools.
+
+It opens on a single-scoop ice cream cone: a cone tipped point-down with its
+apex under the plate, so the build-plate cut leaves a flat to stand on, and a
+scoop dropped into the rim and blended in. Three shapes, and between them
+they demonstrate most of what the tool does. **Starters** has the rest
+(Blob, Vase, Keytag, Bracket) and will replace whatever is on screen.
+
+The filename stays `sdf_editor.html` — it is the URL already live on the
+site and already saved to a Home Screen, and nothing in the app depends on
+what the file is called.
 
 ### Opening it on an iPhone
 
@@ -382,11 +392,13 @@ The file has to reach the phone somehow; the two easy routes are:
 - **AirDrop the file** to the phone and open it from Files. Safari runs it
   straight off local storage.
 
-Either way, use **Share → Add to Home Screen** once. It then launches
-full-screen with no browser chrome, which is the difference between a web
-page and something that feels like an app. Everything runs on the phone —
-there is no server to keep alive, and the model is kept in local storage,
-so closing the tab doesn't lose it.
+Either way, use **Share → Add to Home Screen** once. The shortcut is
+labelled *MetaMeld* and launches full-screen with no browser chrome, which
+is the difference between a web page and something that feels like an app.
+Everything runs on the phone — there is no server to keep alive, and the
+model is kept in local storage, so closing the tab doesn't lose it. (The
+storage key was renamed with the app; a model saved under the old key is
+picked up once and re-saved under the new one, so nothing is lost.)
 
 ### Putting it on the website
 
