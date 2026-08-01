@@ -705,13 +705,16 @@ function buildPlan(list) {
 // the flat-belly cut every print-in-place part wants.
 const STARTERS = {
   // The opening model. Cone tipped point-down with its apex 3 mm under the
-  // plate, so the plane cut leaves a ~8 mm flat to stand on instead of the
-  // point it would otherwise balance on. The scoop sits 8 mm down inside the
-  // rim and blends in, so the two print as one piece.
+  // plate, so the plane cut leaves a flat to stand on instead of the point it
+  // would otherwise balance on. A squashed ellipsoid for the scoop, and a
+  // torus blended over the join for the cone's rolled rim. The plate cut is
+  // soft (2.75 mm) so the tip meets the plate in a fillet rather than a knife
+  // edge — kinder to a first layer.
   'Ice cream': [
+    makeNode('ellipsoid', { p: [0, 0, 50.5], d: [35, 35, 28.5] }),
     makeNode('cone', { p: [0, 0, 19], d: [3, 17, 44], round: 1 }),
-    makeNode('sphere', { p: [0, 0, 52], d: [19, 0, 0], k: 3 }),
-    makeNode('plane', { op: 'cut', p: [0, 0, 0] })
+    makeNode('torus', { p: [0, 0, 44.5], d: [16.5, 5, 0], k: 1.25 }),
+    makeNode('plane', { op: 'cut', p: [0, 0, 0], k: 2.75 })
   ],
   'Blob': [
     makeNode('sphere', { p: [0, 0, 16], d: [16, 0, 0], k: 8 }),
@@ -784,7 +787,8 @@ function adopt(doc) {
     else if (n.tg && !Array.isArray(n.tg)) n.tg = null;
     if (Array.isArray(n.tg)) n.tg = n.tg.filter(id => typeof id === 'number');
   }
-  syncBodies(); resetPicked();
+  syncBodies();
+  picked = new Set();   // open showing the model, not a selection
   return true;
 }
 
@@ -803,7 +807,7 @@ if (!load()) {
   bodies = [{ id: 0, name: 'Body 1', on: true }];
   activeBody = 0;
   sel = 0;
-  resetPicked();
+  picked = new Set();
 }
 
 // ======================================================================
@@ -1868,7 +1872,7 @@ $('startBtn').onclick = () => {
         activeBody = 0;
         syncBodies();
         sel = 0;
-        resetPicked();
+        picked = new Set();
         closeModal();
         rebuildShader(); renderList(); renderInspector(); save();
         frameModel();
