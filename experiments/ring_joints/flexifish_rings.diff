@@ -1,0 +1,305 @@
+--- flexifish.py	2026-07-30 23:58:59.864003793 +0000
++++ experiments/ring_joints/flexifish_rings_WIP.py	2026-07-30 23:58:59.938247812 +0000
+@@ -54,7 +54,7 @@
+                                        # plate before the z=0 cut (bigger = wider flat belly)
+ 
+     # ---- articulation ------------------------------------------------
+-    n_segments: int = 5                # articulated segments between head and tail piece
++    n_segments: int = 2                # articulated segments between head and tail piece
+     head_length: float = 34.0          # nose -> first joint
+     tail_root_len: float = 12.0        # solid peduncle length ahead of the caudal fin
+     swing_front_deg: float = 16.0      # per-joint swing at the front...
+@@ -64,7 +64,21 @@
+     wall: float = 1.6                  # socket wall thickness
+     min_seg_len: float = 6.0           # refuse to make segments shorter than this
+ 
+-    # ---- segment joints: plate-cut ball captured in a spherical socket --
++    # ---- segment joints: two interlocked rings (topologically linked) ---
++    # A tilted torus fused into a convex dome on the front segment threads
++    # a vertical torus recessed in the rear segment's concave cup. Being
++    # linked rather than clipped, capture does not depend on tolerance at
++    # all -- the joint only comes apart if a ring breaks.
++    # Geometry rule (derived + verified): with the tilted ring's axis at
++    # `ring_axis_deg` from vertical in the XZ plane, the largest possible
++    # centreline separation is R*(1 - sin a) at an offset of R*cos(a), so
++    #     tube r <= (R*(1 - sin a) - clearance) / 2
++    ring_axis_deg: float = 30.0        # tilted ring axis from vertical (XZ)
++    ring_tube_min: float = 0.70        # thinnest acceptable tube radius
++    ring_max: float = 7.0              # largest ring centreline radius
++    ring_dome_pad: float = 1.0         # dome radius beyond the ring envelope
++
++    # ---- legacy ball-joint knobs (unused by the ring linkage) ----------
+     # The socket mouth is a cone whose aperture is deliberately NARROWER
+     # than the ball: `joint_capture` is that interference as a fraction of
+     # the ball radius. It is what makes a joint pop apart only under real
+@@ -186,6 +200,16 @@
+     return (np.sqrt((X - cx) ** 2 + (Y - cy) ** 2) - r).astype(F32)
+ 
+ 
++def sd_torus(X, Y, Z, cx, cy, cz, nx, ny, nz, R, r):
++    """Torus: centre (cx,cy,cz), axis of revolution (nx,ny,nz) unit, major
++    radius R, tube radius r."""
++    px, py, pz_ = X - cx, Y - cy, Z - cz
++    h = px * nx + py * ny + pz_ * nz              # along the axis
++    qx, qy, qz = px - h * nx, py - h * ny, pz_ - h * nz
++    q = np.sqrt(qx * qx + qy * qy + qz * qz)      # radius from the axis
++    return (np.sqrt((q - R) ** 2 + h * h) - r).astype(F32)
++
++
+ def sd_polygon(vr, vz, pr, pz):
+     """2D polygon SDF (Inigo Quilez formulation), vectorized."""
+     n = len(vr)
+@@ -344,9 +368,13 @@
+         h = max(min(R - zc, 2 * R), 0.0)          # spherical cap below z = 0
+         return 1.0 - (h * h * (3 * R - h)) / (4 * R ** 3)
+ 
+-    def _wall_for(self, R):
+-        """Socket wall thins with the ball so small joints stay printable."""
+-        return min(self.p.wall, max(1.0, 0.45 * R))
++    # ---------------- joint sizing: interlocked ring pair -------------
++    @staticmethod
++    def _ring_tube(R, a_deg, clearance):
++        """Largest tube radius that still leaves `clearance` between the two
++        centrelines. From R*(1 - sin a) being the maximum separation."""
++        sep = R * (1.0 - np.sin(np.deg2rad(a_deg)))
++        return (sep - clearance) / 2.0
+ 
+     def _size_joints(self):
+         p = self.p
+@@ -354,80 +382,70 @@
+         segl = np.diff(cuts)
+         n = len(cuts)
+         top = [self.top_at(x) for x in cuts]
++        a = p.ring_axis_deg
++        ca, sa = np.cos(np.deg2rad(a)), np.sin(np.deg2rad(a))
+         self.joints = []
+         for i, xa in enumerate(cuts):
+-            # Largest ball whose shell fits inside the body at its own
+-            # height, under the back, and end-to-end with the neighbouring
+-            # joint's shell. Every term depends on R, so bisect.
++            # Largest ring pair that fits: the linkage spans
++            # off + 2(R+r) along the body, its dome rim must sit inside the
++            # section, and the rings must clear the build plate.
+             def fits(R):
+-                Rb = R + p.clearance + self._wall_for(R)
+-                zc = self._ball_zc(R, p.clearance)
+-                if Rb > self.halfwidth_at(xa, zc) - 0.7:
++                r = self._ring_tube(R, a, p.clearance)
++                if r < p.ring_tube_min:
+                     return False
+-                if zc + Rb > top[i] - 0.9:
++                off = R * ca
++                dome = R + r + p.ring_dome_pad
++                zc = R + r + 0.6                  # rings clear of the plate
++                if zc + R + r > top[i] - 0.8:
+                     return False
+-                for s in (i - 1, i):          # adjacent articulated segments
+-                    if 0 <= s < len(segl) and 2 * Rb > segl[s] - 2.4:
+-                        return False          # 2.4 = clearance + solid bridge
++                if dome > self.halfwidth_at(xa, zc) - 0.5:
++                    return False
++                span = off + 2 * (R + r)
++                for s_ in (i - 1, i):
++                    if 0 <= s_ < len(segl) and span > segl[s_] - 2.0:
++                        return False
+                 return True
+-            lo, hi = 0.4, p.joint_ball_max
++            lo, hi = 0.8, p.ring_max
+             if fits(hi):
+                 R = hi
+             else:
+-                for _ in range(28):
++                for _ in range(30):
+                     mid = 0.5 * (lo + hi)
+                     if fits(mid):
+                         lo = mid
+                     else:
+                         hi = mid
+                 R = lo
+-            we = self._wall_for(R)
+-            if R < 1.6:
++            r = self._ring_tube(R, a, p.clearance)
++            if r < p.ring_tube_min:
+                 raise SystemExit(
+-                    f"joint at x={xa:.1f} would need a ball of only "
+-                    f"R={R:.2f} mm (<1.6 minimum). Segments are too short "
+-                    f"or the body too narrow there -- reduce n_segments, "
+-                    f"lengthen the fish, or widen the body.")
+-            if R < 2.2:
+-                self.warnings.append(
+-                    f"joint at x={xa:.1f}: delicate (ball R={R:.1f} mm) -- "
+-                    f"handle gently, or widen the body")
+-
+-            zc = self._ball_zc(R, p.clearance)
+-            rn = max(1.0, p.joint_neck * R)
+-            Rb = R + p.clearance + we
+-            # Socket mouth: open it only as far as the requested swing needs.
+-            # Aperture (R+clearance)*sin(theta) must stay under the ball
+-            # radius; what is left over is the grip that resists pop-out.
++                    f"joint at x={xa:.1f}: no ring pair fits (tube would be "
++                    f"{max(r, 0):.2f} mm, minimum {p.ring_tube_min}). The "
++                    f"linkage needs about {R * ca + 2 * (R + p.ring_tube_min):.0f} mm "
++                    f"of segment length -- use fewer segments, a longer body, "
++                    f"or lower ring_axis_deg.")
++            off = R * ca
++            zc = R + r + 0.6
++            dome = R + r + p.ring_dome_pad
+             t = i / max(n - 1, 1)
+-            sw_req = (p.swing_front_deg
+-                      + (p.swing_rear_deg - p.swing_front_deg) * t)
+-            half_neck = np.rad2deg(np.arcsin(np.clip(rn / R, 0.02, 0.95)))
+-            grip_min = max(p.joint_capture * R, 0.45)   # never a token lip
+-            th_max = np.rad2deg(np.arcsin(np.clip(
+-                (R - grip_min) / (R + p.clearance), 0.05, 0.97)))
+-            th = min(sw_req + half_neck, th_max)
+-            sw = max(0.0, th - half_neck)
+-            grip = R - (R + p.clearance) * np.sin(np.deg2rad(th))
+-            if sw < sw_req - 0.5:
+-                self.warnings.append(
+-                    f"joint at x={xa:.1f}: swing limited to +/-{sw:.0f} deg "
+-                    f"(requested {sw_req:.0f}) to keep the ball captured; "
+-                    f"a wider body allows more swing")
+-            if grip < 0.45:
++            sw = (p.swing_front_deg
++                  + (p.swing_rear_deg - p.swing_front_deg) * t)
++            if r < p.ring_tube_min + 0.15:
+                 self.warnings.append(
+-                    f"joint at x={xa:.1f}: only {grip:.2f} mm of socket grip "
+-                    f"-- may pop apart easily; lower swing_*_deg or raise "
+-                    f"joint_capture")
+-            beta = sw / 2.0 + 2.0
++                    f"joint at x={xa:.1f}: thin rings (tube r={r:.2f} mm) -- "
++                    f"they will not pull apart but can snap; longer segments "
++                    f"allow thicker rings")
+             self.joints.append(dict(
+-                xa=float(xa), top=top[i], R=float(R), zc=float(zc),
+-                rn=float(rn), Rb=float(Rb), swing=float(sw),
+-                theta=float(th), grip=float(grip),
+-                cosO=float(np.cos(np.deg2rad(th))),
+-                nl=float(Rb + 2.2),               # neck length, ball -> body
+-                above=float(self._above_plate_frac(R, zc)),
+-                tanb=float(np.tan(np.deg2rad(beta)))))
++                xa=float(xa), top=top[i], R=float(R), rt=float(r),
++                off=float(off), zc=float(zc), dome=float(dome),
++                swing=float(sw),
++                # tilted ring: axis in XZ, `a` from vertical; sits forward
++                axA=(float(sa), 0.0, float(ca)),
++                cA=(float(xa - off / 2), 0.0, float(zc)),
++                # vertical ring: axis along Y; sits aft
++                axB=(0.0, 1.0, 0.0),
++                cB=(float(xa + off / 2), 0.0, float(zc)),
++                tanb=float(np.tan(np.deg2rad(sw / 2 + 2.0)))))
+ 
+     # ---------------- fins & face -----------------------------------
+     def with_fins(self, X, Y, Z):
+@@ -587,36 +605,22 @@
+         # flat belly: the build-plate cut
+         return np.maximum(d, (-Z).astype(F32))
+ 
+-    # ---------------- joint geometry: ball, socket, shell -------------
+-    def _joint(self, j, X, Y, Z, want, x_front_limit=None):
+-        """All three pieces are concentric on the ball centre, so nothing
+-        sticks up on a stalk to be levered out, and the socket shell is a
+-        sphere that can be clipped to the body silhouette."""
+-        p, xa, zc, R = self.p, j["xa"], j["zc"], j["R"]
+-        px = (X - xa).astype(F32)
+-        pz = (Z - zc).astype(F32)
+-        r = np.sqrt(px * px + Y * Y + pz * pz).astype(F32)
+-        if want == "pin":                          # ball + neck, front side
+-            ball = (r - R).astype(F32)
+-            x0 = xa - j["nl"]
+-            if x_front_limit is not None:          # stay clear of the front
+-                x0 = min(max(x0, x_front_limit), xa - R - 0.4)
+-            L = max(xa - x0, 0.1)
+-            t = np.clip(-px / L, 0.0, 1.0)         # capsule toward -x
+-            qx = px + L * t
+-            neck = (np.sqrt(qx * qx + Y * Y + pz * pz) - j["rn"]).astype(F32)
+-            # the ball dips below z=0 by design; the plate cut is what
+-            # gives it a flat, unsupported-printable bottom
+-            return np.maximum(np.minimum(ball, neck), (-Z).astype(F32))
+-        if want == "cav":                          # socket cavity + mouth
+-            sph = (r - (R + p.clearance)).astype(F32)
+-            mouth = np.maximum((r - (j["Rb"] + 2.0)).astype(F32),
+-                               (j["cosO"] * r + px).astype(F32))
+-            return np.minimum(sph, mouth)
+-        if want == "boss":                         # spherical socket shell
+-            return (r - j["Rb"]).astype(F32)
+-        if want == "relief":                       # clearance for the shell
+-            return (r - (j["Rb"] + p.clearance + 0.35)).astype(F32)
++    # ---------------- joint geometry: rings + dome/cup face -----------
++    def _joint(self, j, X, Y, Z, want):
++        """ringA = tilted torus (front segment), ringB = vertical torus (rear
++        segment); `face` is the convex-dome / concave-cup boundary between
++        the two, a hemisphere on the joint axis blending into the cut plane
++        so the linkage is hidden inside the silhouette."""
++        if want == "ringA":
++            cx, cy, cz = j["cA"]; nx, ny, nz = j["axA"]
++            return sd_torus(X, Y, Z, cx, cy, cz, nx, ny, nz, j["R"], j["rt"])
++        if want == "ringB":
++            cx, cy, cz = j["cB"]; nx, ny, nz = j["axB"]
++            return sd_torus(X, Y, Z, cx, cy, cz, nx, ny, nz, j["R"], j["rt"])
++        if want == "face":
++            rho2 = Y * Y + (Z - j["zc"]) ** 2
++            bulge = np.sqrt(np.maximum(j["dome"] ** 2 - rho2, 0.0))
++            return ((X - j["xa"]) - bulge).astype(F32)
+         raise ValueError(want)
+ 
+     # ---------------- assemble the printable plate --------------------
+@@ -626,38 +630,30 @@
+         fins = self._fins()
+         for g in fins:
+             F = np.maximum(F, -self.fin_cavity(g, X, Y, Z))
+-        absY = np.abs(Y)
+         J = self.joints
+         nseg = len(J) + 1
+         out = None
+         for i in range(nseg):
+             seg = F.copy()
+-            front_limit, boss_own = None, None
+-            if i > 0:                              # socket at the front face
+-                jf = J[i - 1]
+-                bound = jf["xa"] + p.face_gap / 2 + jf["tanb"] * absY
+-                seg = np.maximum(seg, (bound - X).astype(F32))
+-                # clipped to the body: the shell can never bulge out of the
+-                # fish even where the section is tight. Clip 0.15 mm inside
+-                # the surface so the two never land exactly coincident,
+-                # which marching cubes would mesh as a degenerate crease.
+-                boss_own = np.maximum(self._joint(jf, X, Y, Z, "boss"),
+-                                      (F + F32(0.15)))
+-                seg = np.minimum(seg, boss_own)
+-                seg = np.maximum(seg, -self._joint(jf, X, Y, Z, "cav"))
+-                front_limit = jf["xa"] + jf["Rb"] + 0.6
+-            if i < nseg - 1:                       # ball + neck at the rear
+-                jr = J[i]
+-                bound = jr["xa"] - p.face_gap / 2 - jr["tanb"] * absY
+-                seg = np.maximum(seg, (X - bound).astype(F32))
+-                pin = self._joint(jr, X, Y, Z, "pin", x_front_limit=front_limit)
+-                # hollow out room for the next segment's shell to swing
+-                cut = self._joint(jr, X, Y, Z, "relief")
+-                cut = np.maximum(cut, -pin)        # never carve the ball/neck
+-                if boss_own is not None:           # ...or this segment's shell
+-                    cut = np.maximum(cut, -boss_own)
+-                seg = np.maximum(seg, -cut)
+-                seg = np.minimum(seg, pin)
++            if i > 0:                              # rear side of joint jf:
++                jf = J[i - 1]                      # concave cup + vertical ring
++                fv = self._joint(jf, X, Y, Z, "face")
++                seg = np.maximum(seg, (F32(p.face_gap / 2) - fv))
++                # clear room for the other segment's tilted ring to swing
++                seg = np.maximum(seg, -(self._joint(jf, X, Y, Z, "ringA")
++                                        - F32(p.clearance)))
++                ring = np.maximum(self._joint(jf, X, Y, Z, "ringB"),
++                                  F + F32(0.15))   # never break the skin
++                seg = np.minimum(seg, ring)
++            if i < nseg - 1:                       # front side of joint jr:
++                jr = J[i]                          # convex dome + tilted ring
++                fv = self._joint(jr, X, Y, Z, "face")
++                seg = np.maximum(seg, fv + F32(p.face_gap / 2))
++                seg = np.maximum(seg, -(self._joint(jr, X, Y, Z, "ringB")
++                                        - F32(p.clearance)))
++                ring = np.maximum(self._joint(jr, X, Y, Z, "ringA"),
++                                  F + F32(0.15))
++                seg = np.minimum(seg, ring)
+             out = seg if out is None else np.minimum(out, seg)
+         for g in fins:
+             for sgn in (1.0, -1.0):
