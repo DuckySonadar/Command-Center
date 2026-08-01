@@ -83,6 +83,10 @@
   .node .op { font-size:10px; letter-spacing:.06em; text-transform:uppercase;
               padding:2px 6px; border-radius:5px; background:#33404b;
               color:var(--dim); }
+  .node .bd { font-size:10px; letter-spacing:.04em; padding:2px 6px;
+              border-radius:5px; border:1px solid var(--line); color:var(--dim);
+              max-width:96px; overflow:hidden; text-overflow:ellipsis;
+              white-space:nowrap; }
   .node .op.cut { background:#4a2530; color:#ffb3b3; }
   .node .op.keep { background:#2a3d4a; color:#a8d8ee; }
   .node .ic { width:26px; height:26px; border:0; background:none; color:var(--dim);
@@ -368,24 +372,30 @@ function invRot(x, y, z, e, out) {
 }
 const RAD = Math.PI / 180;
 
-// The JS twin of the generated shader. Same order, same math.
-function sceneSDF(nodes, x, y, z) {
-  let d = 1e9;
+// The JS twin of the generated shader. Same order, same math. Takes a plan
+// (see buildPlan): each body folds on its own running distance, and the
+// bodies meet in a plain min so nothing blends across the boundary.
+function sceneSDF(plan, x, y, z) {
+  let out = 1e9;
   const q = [0, 0, 0], e = [0, 0, 0];
-  for (let i = 0; i < nodes.length; i++) {
-    const n = nodes[i];
-    if (!n.on) continue;
-    let px = n.mx ? Math.abs(x) : x;
-    let py = n.my ? Math.abs(y) : y;
-    let pz = n.mz ? Math.abs(z) : z;
-    e[0] = n.r[0] * RAD; e[1] = n.r[1] * RAD; e[2] = n.r[2] * RAD;
-    invRot(px - n.p[0], py - n.p[1], pz - n.p[2], e, q);
-    const di = PRIMS[n.t].js(q, n.d, n.round || 0);
-    if (n.op === 'add') d = smin(d, di, n.k);
-    else if (n.op === 'cut') d = smax(d, -di, n.k);
-    else d = smax(d, di, n.k);
+  for (let g = 0; g < plan.length; g++) {
+    const list = plan[g].nodes;
+    let d = 1e9;
+    for (let i = 0; i < list.length; i++) {
+      const n = list[i];
+      let px = n.mx ? Math.abs(x) : x;
+      let py = n.my ? Math.abs(y) : y;
+      let pz = n.mz ? Math.abs(z) : z;
+      e[0] = n.r[0] * RAD; e[1] = n.r[1] * RAD; e[2] = n.r[2] * RAD;
+      invRot(px - n.p[0], py - n.p[1], pz - n.p[2], e, q);
+      const di = PRIMS[n.t].js(q, n.d, n.round || 0);
+      if (n.op === 'add') d = smin(d, di, n.k);
+      else if (n.op === 'cut') d = smax(d, -di, n.k);
+      else d = smax(d, di, n.k);
+    }
+    if (d < out) out = d;
   }
-  return d;
+  return out;
 }
 
 // ---------- axis-aligned bounds of everything that adds material ----------
@@ -536,10 +546,65 @@ function makeNode(type, over) {
   const P = PRIMS[type];
   return Object.assign({
     t: type, on: true, op: 'add', k: 0,
+    // b: which body an `add` builds. tg: which bodies a cut/keep reaches,
+    // null meaning all of them (including bodies made after the cut).
+    b: 0, tg: null,
     p: [0, 0, type === 'plane' ? 0 : (P.ext(P.def.slice())[2] || 10)],
     r: [0, 0, 0], d: P.def.slice(), round: 0,
     mx: false, my: false, mz: false
   }, over || {});
+}
+
+// ======================================================================
+// bodies
+// ======================================================================
+// A body is one buildable part. Its shapes fold onto their *own* running
+// distance, so an add only ever blends inside its own body and a cut only
+// reaches the bodies it names — which is what lets a pocket be carved into
+// one part while the part next to it stays whole. The finished bodies are
+// hard-min'd together at the end, never smin'd, or they would melt back
+// into one lump.
+let bodies = [{ id: 0, name: 'Body 1' }];
+
+const bodyName = id => (bodies.find(b => b.id === id) || {}).name || '?';
+const hits = (n, id) => !n.tg || n.tg.indexOf(id) >= 0;
+
+function addBody() {
+  const id = bodies.reduce((m, b) => Math.max(m, b.id), -1) + 1;
+  bodies.push({ id, name: 'Body ' + (id + 1) });
+  return id;
+}
+
+// Bodies exist only because shapes build them, so the list is derived rather
+// than managed: once the last add is deleted or moved away, the body goes.
+// A cut left targeting nothing stays inert on purpose — promoting it to "all"
+// would have it suddenly carve into parts it was never pointed at.
+function syncBodies() {
+  const used = new Set(nodes.filter(n => n.op === 'add').map(n => n.b));
+  bodies = bodies.filter(b => used.has(b.id));
+  for (const id of used)
+    if (!bodies.some(b => b.id === id)) bodies.push({ id, name: 'Body ' + (id + 1) });
+  bodies.sort((a, b) => a.id - b.id);
+  if (!bodies.length) bodies = [{ id: 0, name: 'Body 1' }];
+
+  const live = new Set(bodies.map(b => b.id));
+  for (const n of nodes) {
+    if (n.op === 'add') { if (!live.has(n.b)) n.b = bodies[0].id; }
+    else if (n.tg) n.tg = n.tg.filter(id => live.has(id));
+  }
+}
+
+// One entry per body, holding the shapes that body is folded from: its own
+// adds plus every cut/keep aimed at it, in list order. Bodies with nothing
+// to build are dropped so they cost no shader.
+function buildPlan(list) {
+  const live = list.filter(n => n.on);
+  const plan = [];
+  for (const b of bodies) {
+    const own = live.filter(n => n.op === 'add' ? n.b === b.id : hits(n, b.id));
+    if (own.some(n => n.op === 'add')) plan.push({ id: b.id, nodes: own });
+  }
+  return plan;
 }
 
 // A Plane cut with no rotation keeps everything above its own z — that is
@@ -571,7 +636,7 @@ const STARTERS = {
 };
 
 function snapshot() {
-  undoStack.push(JSON.stringify({ nodes, sel }));
+  undoStack.push(JSON.stringify({ nodes, bodies, sel }));
   if (undoStack.length > 40) undoStack.shift();
   document.getElementById('undoBtn').disabled = false;
 }
@@ -580,25 +645,50 @@ function undo() {
   if (!s) return;
   const d = JSON.parse(s);
   nodes = d.nodes; sel = Math.min(d.sel, nodes.length - 1);
+  if (Array.isArray(d.bodies) && d.bodies.length) bodies = d.bodies;
+  syncBodies();
   document.getElementById('undoBtn').disabled = !undoStack.length;
   rebuildShader(); renderList(); save(); needDraw();
 }
 function save() {
-  try { localStorage.setItem(STORE, JSON.stringify({ nodes, sel })); }
+  try { localStorage.setItem(STORE, JSON.stringify({ nodes, bodies, sel })); }
   catch (e) { /* private browsing: editing still works, it just won't persist */ }
 }
+
+// Takes a stored or pasted document into the editor. Documents written before
+// bodies existed have neither `bodies` nor `b`/`tg` on their shapes; they load
+// as one body whose cuts are all global, which is what they always meant.
+function adopt(doc) {
+  const list = (doc && (doc.nodes || doc)) || [];
+  if (!Array.isArray(list)) return false;
+  const kept = list.filter(n => n && PRIMS[n.t]).slice(0, MAXN)
+                   .map(n => makeNode(n.t, n));
+  if (!kept.length) return false;
+  nodes = kept;
+  bodies = (doc.bodies || []).filter(b => b && typeof b.id === 'number')
+             .map(b => ({ id: b.id, name: String(b.name || 'Body ' + (b.id + 1)) }));
+  for (const n of nodes) {
+    if (typeof n.b !== 'number') n.b = 0;
+    if (n.op === 'add') n.tg = null;
+    else if (n.tg && !Array.isArray(n.tg)) n.tg = null;
+    if (Array.isArray(n.tg)) n.tg = n.tg.filter(id => typeof id === 'number');
+  }
+  syncBodies();
+  return true;
+}
+
 function load() {
   try {
     const d = JSON.parse(localStorage.getItem(STORE) || 'null');
-    if (d && Array.isArray(d.nodes) && d.nodes.length) {
-      nodes = d.nodes.filter(n => PRIMS[n.t]);
-      sel = Math.min(d.sel || 0, nodes.length - 1);
-      return true;
-    }
+    if (adopt(d)) { sel = Math.min(d.sel || 0, nodes.length - 1); return true; }
   } catch (e) {}
   return false;
 }
-if (!load()) { nodes = JSON.parse(JSON.stringify(STARTERS['Blob'])); sel = 0; }
+if (!load()) {
+  nodes = JSON.parse(JSON.stringify(STARTERS['Blob']));
+  bodies = [{ id: 0, name: 'Body 1' }];
+  sel = 0;
+}
 
 // ======================================================================
 // WebGL2 raymarcher
@@ -662,7 +752,7 @@ vec3 invRot(vec3 p, vec3 e){
 ${PRIM_KEYS.map(k => PRIMS[k].glsl).join('\n')}
 
 float map(vec3 P){
-  float d = 1e9, di; vec3 q;
+  float d = 1e9, dB, di; vec3 q;
 ${mapBody}  return d;
 }
 
@@ -771,19 +861,28 @@ const uData = new Float32Array(MAXN * 12);
 function rebuildShader() {
   let body = '';
   const used = nodes.slice(0, MAXN);
-  used.forEach((n, i) => {
-    if (!n.on) return;
-    const b = 3 * i;
-    body += '  q = P;\n';
-    // mirror the *world* point, so a shape at x = 20 also appears at x = -20
-    if (n.mx) body += '  q.x = abs(q.x);\n';
-    if (n.my) body += '  q.y = abs(q.y);\n';
-    if (n.mz) body += '  q.z = abs(q.z);\n';
-    body += `  q = invRot(q - uD[${b}].xyz, uD[${b + 1}].xyz);\n`;
-    body += `  di = ${PRIMS[n.t].fn}(q, uD[${b + 2}].xyz, uD[${b + 1}].w);\n`;
-    if (n.op === 'add') body += `  d = smin(d, di, uD[${b}].w);\n`;
-    else if (n.op === 'cut') body += `  d = smax(d, -di, uD[${b}].w);\n`;
-    else body += `  d = smax(d, di, uD[${b}].w);\n`;
+  // uniform slots stay keyed to a shape's index in `nodes`, so a shape that
+  // several bodies cut is emitted several times but packed only once
+  const slot = new Map();
+  used.forEach((n, i) => slot.set(n, i));
+  buildPlan(used).forEach(part => {
+    body += '  dB = 1e9;\n';
+    part.nodes.forEach(n => {
+      const i = slot.get(n);
+      if (i === undefined) return;
+      const b = 3 * i;
+      body += '  q = P;\n';
+      // mirror the *world* point, so a shape at x = 20 also appears at x = -20
+      if (n.mx) body += '  q.x = abs(q.x);\n';
+      if (n.my) body += '  q.y = abs(q.y);\n';
+      if (n.mz) body += '  q.z = abs(q.z);\n';
+      body += `  q = invRot(q - uD[${b}].xyz, uD[${b + 1}].xyz);\n`;
+      body += `  di = ${PRIMS[n.t].fn}(q, uD[${b + 2}].xyz, uD[${b + 1}].w);\n`;
+      if (n.op === 'add') body += `  dB = smin(dB, di, uD[${b}].w);\n`;
+      else if (n.op === 'cut') body += `  dB = smax(dB, -di, uD[${b}].w);\n`;
+      else body += `  dB = smax(dB, di, uD[${b}].w);\n`;
+    });
+    body += '  d = min(d, dB);\n';   // plain min: bodies must not blend
   });
   if (!body) body = '  d = 1e9;\n';
   let np;
@@ -1093,9 +1192,16 @@ function renderList() {
     const el = document.createElement('div');
     el.className = 'node' + (i === sel ? ' sel' : '') + (n.on ? '' : ' off');
     const opCls = n.op === 'cut' ? 'cut' : n.op === 'keep' ? 'keep' : '';
+    // a one-body model reads exactly as it did before bodies existed
+    const badge = bodies.length < 2 ? ''
+      : `<span class="bd">${n.op === 'add' ? bodyName(n.b)
+          : !n.tg ? 'all'
+          : n.tg.length ? n.tg.map(bodyName).join('·')
+          : 'none'}</span>`;
     el.innerHTML =
       `<button class="ic" data-act="on">${n.on ? '●' : '○'}</button>` +
       `<span class="nm">${PRIMS[n.t].name}</span>` +
+      badge +
       `<span class="op ${opCls}">${OPS.find(o => o[0] === n.op)[1]}</span>` +
       `<button class="ic" data-act="up">▲</button>` +
       `<button class="ic" data-act="down">▼</button>`;
@@ -1152,6 +1258,68 @@ function sliderRow(label, unit, get, set, min, max, step) {
   return row;
 }
 
+// ---------- body controls ----------
+function chipRow(label, hint) {
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.innerHTML = `<label><span>${label}</span></label>`;
+  const box = document.createElement('div');
+  box.className = 'toggles';
+  row.appendChild(box);
+  if (hint) {
+    const p = document.createElement('p');
+    p.style.cssText = 'color:var(--dim);font-size:11.5px;margin:6px 0 0';
+    p.textContent = hint;
+    row.appendChild(p);
+  }
+  row.box = box;
+  return row;
+}
+function chip(text, on, fn) {
+  const b = document.createElement('button');
+  b.className = 'btn sm' + (on ? ' on' : '');
+  b.textContent = text;
+  b.onclick = () => {
+    snapshot(); fn();
+    syncBodies();
+    rebuildShader(); renderList(); renderInspector(); save(); needDraw();
+  };
+  return b;
+}
+
+// Which body this shape builds. Everything an `add` does — its blend above
+// all — stays inside the body it belongs to.
+function bodyRow(n) {
+  const row = chipRow('Body');
+  bodies.forEach(b => row.box.appendChild(
+    chip(b.name, n.b === b.id, () => n.b = b.id)));
+  row.box.appendChild(chip('＋ New body', false, () => n.b = addBody()));
+  return row;
+}
+
+// Which bodies this cut/keep reaches. "All bodies" also covers bodies made
+// later, which is what the build-plate cut wants.
+function targetRow(n) {
+  const none = n.tg && !n.tg.length;
+  const row = chipRow('Applies to', none
+    ? 'No bodies left to cut — this shape does nothing. Pick one, or All.'
+    : bodies.length < 2
+      ? 'Add a second body to a shape above to aim this cut at one of them.'
+      : '');
+  row.box.appendChild(chip('All bodies', !n.tg, () => n.tg = null));
+  bodies.forEach(b => {
+    const on = !!n.tg && n.tg.indexOf(b.id) >= 0;
+    row.box.appendChild(chip(b.name, on, () => {
+      if (!n.tg) { n.tg = [b.id]; return; }      // All -> just this one
+      const at = n.tg.indexOf(b.id);
+      if (at < 0) n.tg.push(b.id);
+      else if (n.tg.length > 1) n.tg.splice(at, 1);
+      else n.tg = null;                          // last one off -> back to All
+    }));
+  });
+  return row;
+}
+
 let inspectorRows = [];
 function refreshInspectorValues() {
   inspectorRows.forEach(r => r.refresh && r.refresh());
@@ -1202,12 +1370,15 @@ function renderInspector() {
     b.style.flex = '1';
     b.onclick = () => {
       snapshot(); n.op = k;
+      syncBodies();   // an add turned into a cut can strand its old body
       rebuildShader(); renderList(); renderInspector(); save(); needDraw();
     };
     seg.appendChild(b);
   });
   opRow.appendChild(seg);
   host.appendChild(opRow);
+
+  host.appendChild(n.op === 'add' ? bodyRow(n) : targetRow(n));
 
   add(sliderRow('Blend', ' mm', () => n.k, v => n.k = v, 0, 25, 0.25));
 
@@ -1256,7 +1427,7 @@ function probeSize(B) {
                  Math.ceil((B.hi[a] - B.lo[a]) / cell) + 1));
   const n = [N(0), N(1), N(2)];
   const d = [0, 1, 2].map(a => (B.hi[a] - B.lo[a]) / (n[a] - 1));
-  const live = nodes.filter(x => x.on);
+  const live = buildPlan(nodes);
   const lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
   // For each of the six extremes keep the *deepest* sample in that outermost
   // slab, not the first one found: bisecting from a thin corner of the slab
@@ -1346,7 +1517,11 @@ $('addBtn').onclick = () => {
         if (!b) return;
         if (nodes.length >= MAXN) { showErr('Shape limit is ' + MAXN); closeModal(); return; }
         snapshot();
-        nodes.push(makeNode(b.dataset.prim));
+        const fresh = makeNode(b.dataset.prim);
+        // keep building the body you were working on, rather than starting one
+        fresh.b = nodes[sel] && nodes[sel].op === 'add' ? nodes[sel].b
+                : bodies.length ? bodies[0].id : 0;
+        nodes.push(fresh);
         sel = nodes.length - 1;
         closeModal();
         rebuildShader(); renderList(); renderInspector(); save(); needDraw();
@@ -1367,6 +1542,7 @@ $('delBtn').onclick = () => {
   snapshot();
   nodes.splice(sel, 1);
   sel = Math.max(0, Math.min(sel, nodes.length - 1));
+  syncBodies();   // that may have been the last shape building its body
   rebuildShader(); renderList(); renderInspector(); save(); needDraw();
 };
 
@@ -1394,6 +1570,8 @@ $('startBtn').onclick = () => {
         if (!b) return;
         snapshot();
         nodes = JSON.parse(JSON.stringify(STARTERS[b.dataset.st]));
+        bodies = [{ id: 0, name: 'Body 1' }];
+        syncBodies();
         sel = 0;
         closeModal();
         rebuildShader(); renderList(); renderInspector(); save();
@@ -1413,7 +1591,7 @@ $('jsonBtn').onclick = () => {
     'you can paste text.</p>',
     () => {
       const ta = $('jsonTa');
-      ta.value = JSON.stringify({ version: 1, nodes }, null, 1);
+      ta.value = JSON.stringify({ version: 2, bodies, nodes }, null, 1);
       $('jsCopy').onclick = () => {
         ta.select();
         if (navigator.clipboard) navigator.clipboard.writeText(ta.value).catch(() => {});
@@ -1423,10 +1601,12 @@ $('jsonBtn').onclick = () => {
       $('jsLoad').onclick = () => {
         try {
           const d = JSON.parse(ta.value);
-          const list = (d.nodes || d).filter(n => PRIMS[n.t]);
-          if (!list.length) throw new Error('no shapes found');
+          const list = (d && (d.nodes || d)) || [];
+          // check before snapshotting, so a bad paste leaves no undo step
+          if (!Array.isArray(list) || !list.some(n => n && PRIMS[n.t]))
+            throw new Error('no shapes found');
           snapshot();
-          nodes = list.map(n => makeNode(n.t, n));
+          adopt(d);
           sel = 0;
           closeModal();
           rebuildShader(); renderList(); renderInspector(); save(); frameModel();
@@ -1449,7 +1629,8 @@ document.body.addEventListener('click', e => {
 });
 
 let building = false, cached = null;      // { key, blob } from the last build
-const stlKey = res => JSON.stringify(nodes.filter(n => n.on)) + '@' + res;
+const stlKey = res =>
+  JSON.stringify({ n: nodes.filter(n => n.on), b: bodies }) + '@' + res;
 
 $('stlBtn').onclick = () => {
   if (building) return;
@@ -1483,7 +1664,7 @@ $('stlBtn').onclick = () => {
   catch (e) { showErr('Out of memory for the grid — raise the resolution'); return; }
   building = true;
   $('stlBtn').disabled = true;
-  const live = nodes.filter(n => n.on);
+  const live = buildPlan(nodes);
   const t0 = Date.now();
   let i = 0;
   // slice at a time, back to the event loop between slices: a phone stays

@@ -418,6 +418,45 @@ A model is an ordered list of shapes, each applied to what came before:
 Order matters: a Cut only removes what is already there, so shapes added
 after it are untouched — use ▲▼ to move a shape up or down the list.
 
+### Bodies
+
+A body is one buildable part. Every Add belongs to one — its **Body** row
+in the inspector, with **＋ New body** to start another — and every Cut or
+Keep has an **Applies to** row naming the bodies it reaches. The default
+is *All bodies*, so a model that never touches any of this behaves exactly
+as it did before bodies existed.
+
+Two things follow from a shape living in a body:
+
+- **Blend stops at the boundary.** Two shapes in the same body with a few
+  mm of blend fuse into one filleted lump; the same two shapes in
+  different bodies meet in a hard crease instead. Nothing smooths across
+  a body line.
+- **A cut only reaches what it names.** Point a pocket at Body 1 and
+  Body 2 keeps its shape, even where the cutting shape passes straight
+  through it. That is the whole reason bodies exist — a captive part
+  needs its socket carved out of its neighbour and *not* out of itself.
+
+*All bodies* also covers bodies made later, which is what the build-plate
+plane cut wants: make it once and every part you add afterwards gets its
+flat bottom for free.
+
+Bodies are derived, not managed: one exists as long as some Add builds it,
+and it disappears when the last one is deleted or moved away. A cut that
+named only that body is left pointing at nothing and goes inert — it is
+shown as `none` in the shape list rather than quietly widening to
+everything.
+
+The badges in the shape list only appear once a model has two bodies, so
+single-part models stay as uncluttered as they were.
+
+**This is not a clearance.** Two bodies that overlap in space still union
+into one solid — separate bodies stop the *field* from interacting, not
+the geometry. Print-in-place parts still need a real gap between them
+(`flexifish_nurbs.py` uses 0.55 mm), and that gap has to survive meshing:
+below roughly two voxels of the STL resolution it closes up and the parts
+come out welded.
+
 **Orbit** mode: one finger orbits, two fingers pinch and pan. **Move**
 mode: one finger slides the selected shape across the screen plane, two
 fingers raise and lower it. ⤢ frames the model in whatever strip of screen
