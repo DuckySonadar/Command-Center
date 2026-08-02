@@ -65,10 +65,10 @@ class FishParams:
     min_seg_len: float = 6.0           # refuse to make segments shorter than this
 
     # ---- segment joints: two interlocked rings (topologically linked) ---
-    # A tilted torus fused into a convex dome on the front segment threads
-    # a vertical torus recessed in the rear segment's concave cup. Being
-    # linked rather than clipped, capture does not depend on tolerance at
-    # all -- the joint only comes apart if a ring breaks.
+    # A tilted torus on the front segment threads a vertical torus on the
+    # rear one. Being linked rather than clipped, capture does not depend on
+    # tolerance at all -- the joint only comes apart if a ring breaks, and
+    # nothing else is needed to hold the two segments together.
     # Geometry rule (derived + verified): with the tilted ring's axis at
     # `ring_axis_deg` from vertical in the XZ plane, the largest possible
     # centreline separation is R*(1 - sin a) at an offset of R*cos(a), so
@@ -76,7 +76,21 @@ class FishParams:
     ring_axis_deg: float = 30.0        # tilted ring axis from vertical (XZ)
     ring_tube_min: float = 0.70        # thinnest acceptable tube radius
     ring_max: float = 7.0              # largest ring centreline radius
-    ring_dome_pad: float = 1.0         # dome radius beyond the ring envelope
+    # Fillet where a ring meets its own segment. A plain union leaves a sharp
+    # crease there -- a stress riser at the one place the ring is a
+    # cantilever. Blended, the ring's edge is consumed into the body surface
+    # where the two meet.
+    #
+    # OFF by default: it was written from a guess at what "fused" should look
+    # like and the owner has not confirmed it. The machinery is verified (see
+    # `_weld`, and the carve ordering in `segment`) -- set it to ~0.8 to see
+    # it. At 0 the build is identical to the plain-union version.
+    ring_fillet: float = 0.0
+    # There is no dome. An earlier version nested a ball on the front segment
+    # into a matching cup on the rear, as a second capture on top of the
+    # rings -- but the rings are a link, they hold on their own, and a ball
+    # big enough to matter is a ball big enough to swallow the tilted ring.
+    # The seam is a plain wedge and the linkage carries the joint.
 
     # ---- legacy ball-joint knobs (unused by the ring linkage) ----------
     # The socket mouth is a cone whose aperture is deliberately NARROWER
@@ -376,6 +390,21 @@ class FishBuilder:
         sep = R * (1.0 - np.sin(np.deg2rad(a_deg)))
         return (sep - clearance) / 2.0
 
+    def _ring_layout(self, R):
+        """Everything that follows from the ring radius. One place, because
+        `fits()` and the accepted joint must agree exactly -- when they did
+        not, the search approved sizes the build then rejected."""
+        p = self.p
+        ca = np.cos(np.deg2rad(p.ring_axis_deg))
+        r = self._ring_tube(R, p.ring_axis_deg, p.clearance)
+        off = R * ca
+        # Ring height above the plate. The *other* segment's ring is carved
+        # out of this one, so the floor left under that carve is
+        # (zc - R - r - relief); keep 0.6 mm of it or the segment ends in a
+        # wafer that will not print.
+        zc = R + r + p.clearance + 0.6
+        return r, off, zc
+
     def _size_joints(self):
         p = self.p
         cuts = self.cuts
@@ -386,19 +415,22 @@ class FishBuilder:
         ca, sa = np.cos(np.deg2rad(a)), np.sin(np.deg2rad(a))
         self.joints = []
         for i, xa in enumerate(cuts):
-            # Largest ring pair that fits: the linkage spans
-            # off + 2(R+r) along the body, its dome rim must sit inside the
-            # section, and the rings must clear the build plate.
+            # Largest ring pair that fits: the linkage spans off + 2(R+r)
+            # along the body, both rings have to sit inside the section with
+            # skin left over them, and they must clear the build plate.
             def fits(R):
-                r = self._ring_tube(R, a, p.clearance)
+                r, off, zc = self._ring_layout(R)
                 if r < p.ring_tube_min:
                     return False
-                off = R * ca
-                dome = R + r + p.ring_dome_pad
-                zc = R + r + 0.6                  # rings clear of the plate
+                # Ring envelopes. The vertical ring is the tall one (it
+                # reaches zc +/- (R + r)); the tilted ring is the wide one
+                # (+/- (R + r) in y, at z = zc, which is the body's widest
+                # height). Both are clipped to the skin when the plate is
+                # assembled, and a clipped ring is a broken ring, so they have
+                # to fit with room to spare.
                 if zc + R + r > top[i] - 0.8:
                     return False
-                if dome > self.halfwidth_at(xa, zc) - 0.5:
+                if R + r > self.halfwidth_at(xa, zc) - 0.8:
                     return False
                 span = off + 2 * (R + r)
                 for s_ in (i - 1, i):
@@ -416,7 +448,7 @@ class FishBuilder:
                     else:
                         hi = mid
                 R = lo
-            r = self._ring_tube(R, a, p.clearance)
+            r, off, zc = self._ring_layout(R)
             if r < p.ring_tube_min:
                 raise SystemExit(
                     f"joint at x={xa:.1f}: no ring pair fits (tube would be "
@@ -424,9 +456,6 @@ class FishBuilder:
                     f"linkage needs about {R * ca + 2 * (R + p.ring_tube_min):.0f} mm "
                     f"of segment length -- use fewer segments, a longer body, "
                     f"or lower ring_axis_deg.")
-            off = R * ca
-            zc = R + r + 0.6
-            dome = R + r + p.ring_dome_pad
             t = i / max(n - 1, 1)
             sw = (p.swing_front_deg
                   + (p.swing_rear_deg - p.swing_front_deg) * t)
@@ -437,10 +466,23 @@ class FishBuilder:
                     f"allow thicker rings")
             self.joints.append(dict(
                 xa=float(xa), top=top[i], R=float(R), rt=float(r),
-                off=float(off), zc=float(zc), dome=float(dome),
+                off=float(off), zc=float(zc),
                 swing=float(sw),
-                # tilted ring: axis in XZ, `a` from vertical; sits forward
-                axA=(float(sa), 0.0, float(ca)),
+                # Tilted ring: axis in XZ, `a` from vertical; sits forward.
+                #
+                # The sign of the x component decides which half of the ring
+                # is the half that protrudes past the seam, and it is not a
+                # free choice. Mirroring x swaps the two rings' positions, and
+                # the vertical ring is symmetric about its own centre, so both
+                # signs give an identical link and an identical separation --
+                # but only one of them prints. With +sa the protruding arc is
+                # the ring's *low* half, and its bottom (z = zc - R sin a - rt)
+                # sits out past the seam face with nothing under it: the
+                # printer would have to start it in mid-air. With -sa the
+                # protruding arc is the high half, springing from the body at
+                # z = zc + R sin a / 2 and arching up. Same ring, same joint,
+                # supported instead of floating.
+                axA=(float(-sa), 0.0, float(ca)),
                 cA=(float(xa - off / 2), 0.0, float(zc)),
                 # vertical ring: axis along Y; sits aft
                 axB=(0.0, 1.0, 0.0),
@@ -605,55 +647,144 @@ class FishBuilder:
         # flat belly: the build-plate cut
         return np.maximum(d, (-Z).astype(F32))
 
-    # ---------------- joint geometry: rings + dome/cup face -----------
+    # ---------------- joint geometry: rings + seam face ---------------
     def _joint(self, j, X, Y, Z, want):
         """ringA = tilted torus (front segment), ringB = vertical torus (rear
-        segment); `face` is the convex-dome / concave-cup boundary between
-        the two, a hemisphere on the joint axis blending into the cut plane
-        so the linkage is hidden inside the silhouette."""
+        segment); `faceF` / `faceR` are the two sides of the seam, a wedge
+        that opens with |y| so the segments can yaw past each other."""
         if want == "ringA":
             cx, cy, cz = j["cA"]; nx, ny, nz = j["axA"]
             return sd_torus(X, Y, Z, cx, cy, cz, nx, ny, nz, j["R"], j["rt"])
         if want == "ringB":
             cx, cy, cz = j["cB"]; nx, ny, nz = j["axB"]
             return sd_torus(X, Y, Z, cx, cy, cz, nx, ny, nz, j["R"], j["rt"])
-        if want == "face":
-            rho2 = Y * Y + (Z - j["zc"]) ** 2
-            bulge = np.sqrt(np.maximum(j["dome"] ** 2 - rho2, 0.0))
-            return ((X - j["xa"]) - bulge).astype(F32)
+        if want in ("faceF", "faceR"):
+            # The seam: a plane through the joint that opens into a wedge with
+            # |y|. The front segment keeps everything below -face_gap/2 of its
+            # field, the rear everything above +face_gap/2 of its own, so the
+            # two stay face_gap apart measured perpendicular to the surface --
+            # hence the division by the gradient's length, which turns the
+            # wedge from an offset along x into a distance.
+            #
+            # The wedge is what lets the segment yaw. The two sides need
+            # opposite tilts -- both faces sloping the same way is a parallel
+            # gap, and the rear sweeps straight into the front on the side it
+            # turns toward. Sharing one field between them did exactly that
+            # and held the joint to about 6 of its 14 degrees. The apex is the
+            # vertical line through the joint centre, which is the axis the
+            # joint turns about, so the V stays symmetric through the swing.
+            dx = (X - j["xa"]).astype(F32)
+            tb = F32(j["tanb"] if want == "faceF" else -j["tanb"])
+            return ((dx + tb * np.abs(Y)) / np.sqrt(1.0 + tb * tb)).astype(F32)
         raise ValueError(want)
 
+    def _swept(self, j, X, Y, Z, want):
+        """The other segment's ring as it sweeps, not as it rests.
+
+        The joint's motion is a yaw about the vertical line through the seam
+        centre, and the ring pair barely notices it: the gap between the two
+        centrelines holds at 0.55 mm from 0 to 20 degrees. The relief carved
+        for the neighbouring ring, though, was a constant `clearance` offset
+        around where that ring *sits*. The ring could therefore move
+        `clearance` and then hit the wall of its own channel, which capped the
+        joint near 4 degrees of the 14 it was sized for. Carving the swept
+        volume instead costs a few extra torus evaluations and gives back the
+        full range.
+
+        A linked pair also slides, so the real motion is a yaw plus some
+        translation. The sweep does not model that; the slack the rings have
+        inside the relief (`clearance` of it, ~4.5 degrees' worth at R = 7) is
+        what covers it, and the measured range in check_swing.py is the number
+        that matters.
+        """
+        half = np.deg2rad(j["swing"] / 2.0 + 1.0)
+        # 4-degree steps; the scallop left between samples is under 0.01 mm
+        # anywhere near the rings, against 0.55 mm of clearance
+        n = max(3, int(np.ceil(np.rad2deg(2 * half) / 4.0)) | 1)
+        out = None
+        for th in np.linspace(half, -half, n):     # inverse-rotate the samples
+            c, s = np.cos(th), np.sin(th)
+            dx = X - j["xa"]
+            Xr = (j["xa"] + c * dx - s * Y).astype(F32)
+            Yr = (s * dx + c * Y).astype(F32)
+            v = self._joint(j, Xr, Yr, Z, want)
+            out = v if out is None else np.minimum(out, v)
+        return out
+
     # ---------------- assemble the printable plate --------------------
-    def plate(self, X, Y, Z):
-        p = self.p
+    def body_field(self, X, Y, Z, side_fins=True):
+        """The whole body with the fin sockets hollowed out, before it is cut
+        into segments. Every segment is carved from this."""
         F = self.styled(X, Y, Z)
-        fins = self._fins()
-        for g in fins:
+        for g in (self._fins() if side_fins else []):
             F = np.maximum(F, -self.fin_cavity(g, X, Y, Z))
+        return F
+
+    def _weld(self, seg, ring):
+        """Fuse a ring into its own segment with a fillet at the root.
+
+        `ring_fillet = 0` is a plain union and leaves a crease. The blend adds
+        material where the ring comes within the fillet distance of the body,
+        which is the root -- and the root sits inside the channel the
+        neighbouring segment carves, so it *does* eat clearance. `segment`
+        carves that channel after welding for exactly this reason."""
+        k = self.p.ring_fillet
+        out = np.minimum(seg, ring)
+        if k <= 0:
+            return out
+        # Blend only inside the band where the two surfaces are actually
+        # close. `smin` reduces to `min` outside it mathematically, but not in
+        # float32 -- `b + (a - b)` is not bitwise `a` -- and that rounding was
+        # enough to flip a voxel on the belly rim 25 mm from the nearest ring
+        # and leave a two-triangle hole in the plate.
+        band = np.abs(seg - ring) < F32(k)
+        out[band] = smin(seg[band], ring[band], F32(k))
+        return out
+
+    def segment(self, i, X, Y, Z, F=None, side_fins=True):
+        """Segment `i` on its own, from the head (0) back. Kept separate from
+        `plate` so that the swing and clearance checks measure the same field
+        the mesh is built from -- a second copy of this in a test harness is
+        exactly how the swept relief came to look like it did nothing."""
+        p = self.p
+        F = self.body_field(X, Y, Z, side_fins) if F is None else F
         J = self.joints
         nseg = len(J) + 1
+        seg = F.copy()
+        if i > 0:                              # rear side of joint jf:
+            jf = J[i - 1]                      # vertical ring side
+            fv = self._joint(jf, X, Y, Z, "faceR")
+            seg = np.maximum(seg, (F32(p.face_gap / 2) - fv))
+            ring = np.maximum(self._joint(jf, X, Y, Z, "ringB"),
+                              F + F32(0.15))   # never break the skin
+            seg = self._weld(seg, ring)
+            # Clear room for the other segment's tilted ring to swing. This
+            # has to come *after* the weld: `smin` bulges by up to k/4 where
+            # two surfaces meet, the ring root sits squarely inside this
+            # channel, and carving first let a 0.8 mm fillet take the joint
+            # gap from 0.55 down to 0.40 mm. Carving last costs nothing --
+            # the two bare rings are `clearance` apart by construction and
+            # stay that way through the swing, so there is none of the ring
+            # here for the carve to take.
+            seg = np.maximum(seg, -(self._swept(jf, X, Y, Z, "ringA")
+                                    - F32(p.clearance)))
+        if i < nseg - 1:                       # front side of joint jr:
+            jr = J[i]                          # tilted ring side
+            fv = self._joint(jr, X, Y, Z, "faceF")
+            seg = np.maximum(seg, fv + F32(p.face_gap / 2))
+            ring = np.maximum(self._joint(jr, X, Y, Z, "ringA"),
+                              F + F32(0.15))
+            seg = self._weld(seg, ring)
+            seg = np.maximum(seg, -(self._swept(jr, X, Y, Z, "ringB")
+                                    - F32(p.clearance)))
+        return seg
+
+    def plate(self, X, Y, Z, side_fins=True):
+        fins = self._fins() if side_fins else []
+        F = self.body_field(X, Y, Z, side_fins)
         out = None
-        for i in range(nseg):
-            seg = F.copy()
-            if i > 0:                              # rear side of joint jf:
-                jf = J[i - 1]                      # concave cup + vertical ring
-                fv = self._joint(jf, X, Y, Z, "face")
-                seg = np.maximum(seg, (F32(p.face_gap / 2) - fv))
-                # clear room for the other segment's tilted ring to swing
-                seg = np.maximum(seg, -(self._joint(jf, X, Y, Z, "ringA")
-                                        - F32(p.clearance)))
-                ring = np.maximum(self._joint(jf, X, Y, Z, "ringB"),
-                                  F + F32(0.15))   # never break the skin
-                seg = np.minimum(seg, ring)
-            if i < nseg - 1:                       # front side of joint jr:
-                jr = J[i]                          # convex dome + tilted ring
-                fv = self._joint(jr, X, Y, Z, "face")
-                seg = np.maximum(seg, fv + F32(p.face_gap / 2))
-                seg = np.maximum(seg, -(self._joint(jr, X, Y, Z, "ringB")
-                                        - F32(p.clearance)))
-                ring = np.maximum(self._joint(jr, X, Y, Z, "ringA"),
-                                  F + F32(0.15))
-                seg = np.minimum(seg, ring)
+        for i in range(len(self.joints) + 1):
+            seg = self.segment(i, X, Y, Z, F=F)
             out = seg if out is None else np.minimum(out, seg)
         for g in fins:
             for sgn in (1.0, -1.0):
@@ -676,19 +807,31 @@ class FishBuilder:
 # ======================================================================
 # Meshing, export, verification
 # ======================================================================
-def mesh(builder, res, field="plate", sub=None):
+def mesh(builder, res, field="plate", box=None, side_fins=True):
+    """`box` = (x0, x1, y0, y1, z0, z1) trims the build to a test coupon; the
+    belly is never cut, so the piece still sits flat on the plate."""
     x0, x1, y0, y1, z0, z1 = builder.bounds()
-    if sub:
-        x0, x1 = max(x0, sub[0] - 1.5), min(x1, sub[1] + 1.5)
+    if box:
+        x0, x1 = max(x0, box[0] - 1.5), min(x1, box[1] + 1.5)
+        y0, y1 = max(y0, box[2] - 1.5), min(y1, box[3] + 1.5)
+        z1 = min(z1, box[5] + 1.5)
     xs = np.arange(x0, x1 + res, res, dtype=F32)
     ys = np.arange(y0, y1 + res, res, dtype=F32)
     zs = np.arange(z0, z1 + res, res, dtype=F32)
     X, Y, Z = np.meshgrid(xs, ys, zs, indexing="ij")
-    vol = builder.plate(X, Y, Z) if field == "plate" else builder.styled(X, Y, Z)
-    if sub:
-        vol = np.maximum(vol, sd_box(X, Y, Z, sub[0], sub[1],
-                                     y0 - 5, y1 + 5, -5, z1 + 5))
-    verts, faces, _, _ = measure.marching_cubes(vol, level=0.0,
+    vol = (builder.plate(X, Y, Z, side_fins=side_fins) if field == "plate"
+           else builder.styled(X, Y, Z))
+    if box:
+        vol = np.maximum(vol, sd_box(X, Y, Z, box[0], box[1], box[2], box[3],
+                                     -5.0, box[5]))
+    # Not level 0.0. The plate cut is `max(d, -Z)`, which is *exactly* zero
+    # wherever the body crosses z = 0, so if the grid puts a lattice plane
+    # there (z0 = -1.2 with res = 0.30 does) the belly becomes a sheet of
+    # exact zeros. Marching cubes then stitches across it and welds every
+    # part that touches the plate into one shell -- 8 shells became 6, with
+    # nothing wrong with the geometry at all. A hair below zero removes the
+    # degeneracy; it shifts the surface by a thousandth of a millimetre.
+    verts, faces, _, _ = measure.marching_cubes(vol, level=-1e-3,
                                                 spacing=(res, res, res))
     verts += np.array([xs[0], ys[0], zs[0]], dtype=np.float64)
     return verts, faces
@@ -707,11 +850,8 @@ def write_stl(path, verts, faces):
         f.write(rec.tobytes())
 
 
-def mesh_stats(verts, faces):
-    e = np.sort(np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]],
-                                faces[:, [2, 0]]]), axis=1)
-    _, counts = np.unique(e, axis=0, return_counts=True)
-    manifold = bool(np.all(counts == 2))
+def _components(verts, faces):
+    """Union-find over shared vertices; returns a root label per face."""
     parent = np.arange(len(verts))
 
     def find(a):
@@ -726,7 +866,41 @@ def mesh_stats(verts, faces):
             b = find(tri[k])
             if a != b:
                 parent[b] = a
-    shells = len({find(v) for v in faces.ravel()})
+    return np.array([find(t) for t in faces[:, 0]])
+
+
+def drop_debris(verts, faces, res):
+    """Discard shells smaller than four voxels across.
+
+    Where the ring relief channel leaves the body at a glancing angle the two
+    surfaces cross in a feather edge thinner than a voxel, and marching cubes
+    turns each stray sample into a lone octahedron. They are smaller than a
+    nozzle, print as nothing, and their only real effect is to make the shell
+    count -- the check that catches genuinely fused parts -- unreadable."""
+    roots = _components(verts, faces)
+    keep = np.ones(len(faces), dtype=bool)
+    dropped = 0
+    for r in np.unique(roots):
+        m = roots == r
+        v = verts[faces[m].ravel()]
+        if (v.max(0) - v.min(0)).max() < 4 * res:
+            keep[m] = False
+            dropped += 1
+    if not dropped:
+        return verts, faces, 0
+    faces = faces[keep]
+    used = np.unique(faces)
+    remap = np.zeros(len(verts), dtype=np.int64)
+    remap[used] = np.arange(len(used))
+    return verts[used], remap[faces], dropped
+
+
+def mesh_stats(verts, faces):
+    e = np.sort(np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]],
+                                faces[:, [2, 0]]]), axis=1)
+    _, counts = np.unique(e, axis=0, return_counts=True)
+    manifold = bool(np.all(counts == 2))
+    shells = len(np.unique(_components(verts, faces)))
     return manifold, shells
 
 
@@ -812,6 +986,9 @@ def main(argv=None):
           f"segments, {len(b.joints)} joints at x = {jxs}")
 
     verts, faces = mesh(b, res)
+    verts, faces, junk = drop_debris(verts, faces, res)
+    if junk:
+        print(f"dropped {junk} sub-voxel speck(s)")
     write_stl(args.out, verts, faces)
     man, shells = mesh_stats(verts, faces)
     expected = (p.n_segments + 2 + (2 if p.pec_length > 0.5 else 0)
@@ -823,8 +1000,17 @@ def main(argv=None):
               "orphaned. Inspect before printing.")
 
     if args.coupon:
+        # A block around one linkage and nothing else: wide enough to hold
+        # the whole ring pair (they reach off/2 + R + rt either side of the
+        # joint), trimmed in y and z and built without side fins so the only
+        # shells in it are the two segments.
         mid = b.joints[len(b.joints) // 2]
-        cv, cf = mesh(b, res, sub=(mid["xa"] - 7.0, mid["xa"] + 7.5))
+        reach = mid["off"] / 2 + mid["R"] + mid["rt"]
+        cv, cf = mesh(b, res, side_fins=False, box=(
+            mid["xa"] - reach - 2.0, mid["xa"] + reach + 2.0,
+            -(mid["R"] + mid["rt"] + 2.5), mid["R"] + mid["rt"] + 2.5,
+            0.0, mid["zc"] + mid["R"] + mid["rt"] + 2.5))
+        cv, cf, _ = drop_debris(cv, cf, res)
         cp = args.out.replace(".stl", "") + "_joint_test.stl"
         write_stl(cp, cv, cf)
         cm, cs = mesh_stats(cv, cf)

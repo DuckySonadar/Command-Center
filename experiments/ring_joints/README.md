@@ -1,12 +1,17 @@
 # Interlocked ring joints — work in progress
 
-Unfinished replacement for the flexi fish segment linkage. **Nothing here is
-wired into the shipping generator.** `flexifish.py` on this branch is the
-working plate-cut ball joint (from PR #8); the ring code lives only in this
-folder.
+Replacement for the flexi fish segment linkage. **Nothing here is wired into
+the shipping generator.** `flexifish.py` on this branch is the working
+plate-cut ball joint (from PR #8); the ring code lives only in this folder.
 
 Branch: `claude/ring-joints-wip`, based on `9302e59` (ball joints).
-Not for merging into `main` as-is.
+Not for merging into `main` as-is — see "what is left" at the bottom.
+
+**Status: it builds.** The fusion that blocked the last session is fixed, the
+joint meshes as separate parts at print resolution, both rings are real and
+visible, and it swings past its design range. The linkage is the *only* thing
+holding a joint together — there is no ball, no socket, no dome. Nothing has
+been printed yet.
 
 ---
 
@@ -45,13 +50,16 @@ build plate at z = 0. "Axis" below means the torus's axis of revolution.
 
 - **Tilted ring** — axis lies in the **XZ plane**, 30° from vertical
   (equivalently: the ring's *plane* is 60° from vertical / 30° off the
-  floor). Fused into a **convex dome** on the front segment, protruding
-  rearward. Being nearly flat it cannot print floating — the dome is what
-  supports it. Only a thin rim on its underside sits at the steep angle;
-  the rest of the torus curves away and is shallower.
-- **Vertical ring** — axis along **y** (plane XZ), recessed in a **concave
-  cup** on the rear segment. Vertical, so it prints unsupported.
-- Dome nests into cup so the linkage is hidden and only a body seam shows.
+  floor). Fused into the front segment and protruding rearward past the seam.
+  Roughly a third of it stands proud — the arc where `sin t < −1/2`, which is
+  where the seam plane cuts it; the rest is buried in the body. The axis
+  tilts toward **−x**, which puts the proud arc on the ring's *high* side;
+  see "which way the ring leans" below, because the other sign does not print.
+- **Vertical ring** — axis along **y** (plane XZ), fused into the rear
+  segment and protruding forward. Vertical, so it prints unsupported.
+- **The seam is a plain wedge** and nothing else. Each segment ends in a flat
+  face that opens into a V with |y|, `face_gap` apart, and the two rings
+  cross in the gap between them. See "no dome" below.
 
 ### The design rule (derived, then verified numerically to 3 decimals)
 
@@ -88,6 +96,103 @@ Verification of the formula (`verify_rule.py`):
   60        2.00         0.536      0.536    True
 ```
 
+### No dome
+
+There used to be one: a ball on the front segment nesting into a cup on the
+rear, meant to hide the linkage and act as a second capture. It is gone. Two
+linked rings cannot come apart at any tolerance, so a second capture was
+never needed, and the ball was actively in the way.
+
+It was sized `R + rt + 1`, to clear the ring's envelope. But what matters is
+how close the tilted ring comes to the ball's *centre*, and with the ring
+offset `off/2 = R·cos(a)/2` forward of it:
+
+```
+|p(t)|² = R²·[1 + cos²(a)·(sin t + 1/4)]
+
+nearest  = R·√(1 − ¾cos²a)  = 0.661·R at a = 30°
+farthest = R·√(1 + 1¼cos²a) = 1.392·R at a = 30°
+```
+
+(linear in `sin t`, so the extremes are at `sin t = ∓1`; verified against
+brute force to 3 decimals for R ∈ {4, 5.42, 7}, a ∈ {0, 20, 30, 45}). At
+R = 7 the ball was 9.47 against a nearest approach of 4.63 — twice what it
+could be — so it swallowed the tilted ring whole. The front segment came out
+as a solid ball with a tunnel bored through it, the exact negative of the
+rear segment, with no second ring anywhere on the model. The link was real;
+it just was not the design.
+
+Shrinking it to 4.63 made the ring visible, but it was still a sphere sitting
+in the middle of the ring doing a job the ring already does. Removing it
+outright is simpler and strictly better: the seam is a plain wedge, the
+largest print island drops from 0.58 mm³ to 0.06 mm³ (the worst one *was* the
+ball's undercut lower tip), the marching-cubes specks disappear entirely, and
+about 70 s comes off the build.
+
+Consequence for sizing: nothing bounds the rings but the body, so `fits()`
+checks the **ring envelopes** directly — the vertical ring is the tall one
+(`zc ± (R + rt)`), the tilted ring is the wide one (`± (R + rt)` in y, at
+`z = zc`). Both get clipped to the skin when the plate is assembled, and a
+clipped ring is a broken ring.
+
+### Which way the ring leans
+
+The tilted ring's axis can lean toward +x or −x. Mirroring x swaps the two
+rings' positions, and the vertical ring is symmetric about its own centre, so
+**both signs give an identical link and an identical centreline separation**
+— `check_joints.py` prints the same numbers either way. Only one of them
+prints.
+
+The seam cuts the tilted ring at `sin t = −1/2`, so the protruding arc is the
+`sin t < −1/2` third. With the axis toward **+x** that arc is the ring's low
+half: it springs from the body face at `z = zc − R·sin(a)/2` and dips to
+`zc − R·sin(a) − rt`, out past the seam with nothing beneath it. The printer
+would have to start it in mid-air — `check_print.py` finds it as a 0.34 mm³
+island at z = 4.70.
+
+With the axis toward **−x** the same arc is the high half: it springs from
+the body at `z = zc + R·sin(a)/2` and arches upward. The island is gone, and
+the shallowest part of it steps about 0.8 mm horizontally per 0.2 mm layer
+against a 2.9 mm tube — roughly 70% overlap layer to layer, which prints.
+
+Same ring, same joint, same everything except supported instead of floating.
+`ring_axis_deg` is still 30; it is the sign of the axis's x component that
+matters, and it lives in `_size_joints`.
+
+### `ring_fillet` — a root fillet, off by default
+
+`_weld` can smooth-union each ring into its own segment instead of hard-
+unioning it, filleting the root. A plain union leaves a sharp crease at the
+one place the ring is a cantilever, so a fillet is right on stress grounds
+whatever it looks like. It is **off** (`ring_fillet = 0.0`) because it was
+written from a guess at what the owner's "fused / consumed edges" sketch was
+asking for, and that guess is unconfirmed. At 0 the build is identical to the
+plain-union version.
+
+Both settings build clean:
+
+```
+ring_fillet = 0.0   614946 tris, manifold, shells = 8 (expected 8)
+ring_fillet = 0.8   614694 tris, manifold, shells = 8 (expected 8)
+```
+
+and at 0.8 the joints pass, the coupon is 2 shells at 0.30 / 0.20 / 0.16 mm,
+swing first contact is 16-20 deg and the largest print island is 0.06 mm3.
+
+Two things it turned up that are worth keeping either way:
+
+- **The relief has to be carved after the ring is welded, not before.**
+  `smin(a, b, k)` bulges by up to k/4 where two surfaces meet, and the ring
+  root sits squarely inside the channel the neighbouring segment carves for
+  it. Carving first, a 0.8 mm fillet took the measured joint gap from 0.55 mm
+  down to 0.40. Carving last restores it exactly, and costs nothing: the two
+  bare rings are `clearance` apart by construction and stay that way through
+  the swing, so the carve has none of the ring to take.
+- **`smin` is not `min` in float32** outside the blend band — `b + (a - b)` is
+  not bitwise `a`. Blending across the whole grid flipped one voxel on the
+  belly rim, 25 mm from the nearest ring, and left a two-triangle hole in an
+  otherwise manifold plate. `_weld` blends only inside `|seg - ring| < k`.
+
 ### Sizing consequence — read this before changing segment counts
 
 A 0.70 mm minimum tube radius forces `R ≥ 3.9`, which makes the linkage
@@ -96,15 +201,19 @@ shipping fish has 11–12.5 mm segments — *no* ring pair fits them at any
 tilt. This is inherent to ring linkages, not an implementation limit, and
 it is why ring-based flexi models on the internet have chunky bodies.
 
-Working sizes the WIP produced on the blob fish at `n_segments = 2`:
+Sizes the generator now produces on the blob fish at `n_segments = 2`:
 
-| joint x | R | tube | offset | zc | dome |
+| joint x | R | tube | offset | zc | skin over the rings (z, y) |
 |---|---|---|---|---|---|
-| 34.0 | 7.00 | 1.48 | 6.06 | 9.07 | 9.47 |
-| 76.0 | 7.00 | 1.47 | 6.06 | 9.07 | 9.47 |
-| 101.0 | 5.42 | 1.08 | 4.69 | 7.10 | 7.50 |
+| 34.0 | 7.00 | 1.48 | 6.06 | 9.62 | 19.50, 10.48 |
+| 76.0 | 7.00 | 1.47 | 6.06 | 9.62 | 7.61, 3.63 |
+| 101.0 | 5.28 | 1.05 | 4.57 | 7.48 | 0.80, 1.62 |
 
-Those tubes (1.1–1.5 mm radius) are genuinely strong — better than expected.
+Those tubes (1.0–1.5 mm radius) are genuinely strong — better than expected.
+The front two joints are capped by `ring_max`; the rear one is capped by the
+body, through the ring-envelope checks in `fits()` — 0.80 mm of skin over the
+top of its vertical ring — so it is the first thing that gives if the body
+gets any slimmer.
 
 ---
 
@@ -115,75 +224,263 @@ Those tubes (1.1–1.5 mm radius) are genuinely strong — better than expected.
 | `proto.py` | torus SDF, ring sampling, **`linked()`** — the Hopf-link test (counts how many times ring B's centreline crosses ring A's disk; odd = truly linked) |
 | `verify_rule.py` | **reproduces the verification table above** — predicted vs brute-force measured separation, plus the usable-tube table that pins down `a = 30` |
 | `v2.py` | search for a viable (R, tube, offset) at `r = 0.34R`. Prints "no fit" at every tilt — that negative result is what forced the closed-form derivation, since a 34%-of-R tube is far too thick for this configuration |
-| `flexifish_rings_WIP.py` | full `flexifish.py` with rings swapped in. **Broken — see below** |
+| `check_joints.py` | **the joints the generator actually sizes**: linked, clearances, floor and lip thicknesses, and the pierce test on the built field |
+| `check_swing.py` | **range of motion**: yaws the rear segment and reports where it first touches, and whether the stop is the rings or the seam |
+| `check_print.py` | **island check**: walks the coupon layer by layer looking for material that starts in mid-air. This is the long-deferred overhang audit, and it is what caught the ring leaning the wrong way |
+| `sdf_json.py` | reads a scene from the repo's `sdf_editor.html` and evaluates it as an SDF, so the owner's own model can be measured directly instead of paraphrased |
+| `check_against_editor.py` | **proves `sdf_json.py` agrees with the editor** — lifts the editor's own `PRIMS` / `smin` / `invRot` / `sceneSDF` out of the HTML, runs them under node, and compares. Currently 1.9e-7 max error, 100% sign agreement over 4000 points |
+| `owner_joint.json` | the owner's two-segment reference joint, and the thing the generator is meant to reproduce |
+| `tool.json` | the owner's joint **tool**: one solid that, subtracted from a body, leaves two interlocking pieces |
+| `tool_cut.py` | applies that tool at each joint of the fish, scaled to the local section, and checks the result — pieces, linkage, gap, thinnest feature |
+| `describe_scene.py` | **what a scene is actually made of**: node order per body, how far the segments interleave, and how the seam cavity sits against the rings it passes through |
+| `flexifish_rings_WIP.py` | full `flexifish.py` with rings swapped in |
 | `flexifish_rings.diff` | that same work as a unified diff against this branch's `flexifish.py` |
 | `ring_pair.stl` / `.png` | a standalone linked pair, meshed and verified as 2 manifold shells. Printable on its own as a feel test |
 
-Reproduce the linkage check:
-
 ```bash
 cd experiments/ring_joints
-python3 proto.py        # linkage across tilts and offsets (all True)
-python3 verify_rule.py  # closed form vs measurement, + the tube table
-python3 v2.py           # the "no fit" negative result, for context
+python3 proto.py            # linkage across tilts and offsets (all True)
+python3 verify_rule.py      # closed form vs measurement, + the tube table
+python3 v2.py               # the "no fit" negative result, for context
+python3 check_joints.py     # every joint of the default fish  (<1 s)
+python3 check_swing.py 1    # range of motion at the middle joint  (~11 s)
+python3 check_print.py 1    # islands at the middle joint  (~10 s)
+python3 check_against_editor.py          # reader vs the editor  (~2 s, needs node)
+python3 describe_scene.py                # structure of the reference joint  (~1 min)
+python3 tool_cut.py                      # subtract the tool at every joint  (~3 min)
+python3 flexifish_rings_WIP.py --out rings.stl --coupon   # ~3.5 min
+```
+
+Current results:
+
+```
+check_joints.py   all joints pass (linked, sep matches rule to 3 dp,
+                  surface gap 0.550 = clearance, front-segment material
+                  through the rear ring's hole)
+check_swing.py    clear through 14 deg at every joint, first contact at
+                  16-20 deg; design asks +/-6 to 8
+check_print.py    largest island 0.06 mm3 -- a couple of voxels
+coupon shells     2 at every joint, at 0.30 / 0.20 / 0.16 mm, no specks
+rings.stl         614946 tris, manifold, shells = 8 (expected 8)
+rings_joint_test  106344 tris, manifold, shells = 2 (expected 2)
 ```
 
 ---
 
-## Where it broke
+## The fusion, and what it actually was
 
-`flexifish_rings_WIP.py` sizes rings correctly and meshes, but **the two
-segments come out as one fused shell instead of two**. A coupon around the
-joint at x=76 gave 5 shells: 2 pelvic-fin fragments (coupon-window
-artifacts, ignorable), 2 single-point marching-cubes specks, and one
-584k-triangle blob spanning x 62→90 — i.e. both segments welded together.
+Historical, and kept because the *method* is the reusable part. All of this
+happened while the dome still existed.
 
-Each piece checks out in isolation, which is why this is confusing:
+Last session's coupon came out as one welded blob and the note here blamed
+the ring relief channel through the dome. **That was wrong.** Two segments'
+fields never overlapped anywhere — the closest approach was a clean
++0.275 = clearance/2. The weld was somewhere the overlap test could not see,
+because two solids can be disjoint and still be joined:
 
-- face gap is 1.0 mm
-- inter-ring gap is `R(1−sin a) − 2r` = 3.5 − 2.94 = **0.56 mm**, about
-  3.5 voxels at the 0.16 mm coupon resolution — should resolve fine
-- both ring reliefs are applied (`max(seg, −(otherRing − clearance))`)
+The face was `(X − xa) − sqrt(dome² − rho²)`, an offset **along x** rather
+than a distance. At the dome rim the surface is parallel to x, so an x-offset
+of `face_gap` bought a perpendicular gap of *zero*. The dome lip and the cup
+lip met in a knife edge around the entire rim circle. Voxel-adjacency found
+it immediately: touching voxels at x 76.6–78.25, spanning y ±9.5 and z 0–18.5
+— exactly the circle of radius `dome` = 9.47 centred on the joint axis.
 
-### Leading suspicion
+The fix was to make the face a real distance field — `min(wedge, ball)` at
+the time, just `wedge` now that the ball is gone — so that offsetting it by
+±`face_gap/2` gives a gap measured perpendicular to the surface, the same
+everywhere. Shells went from one to two at every resolution tested, 0.30 down
+to 0.12 mm. The general lesson outlives the dome: **a field you offset has to
+be a distance, or the gap you think you asked for is not the gap you get.**
 
-The dome bulges rearward by its **full radius** — 9.47 mm at R=7. So the
-front segment's convex face reaches to `xa + 9.47`, which puts the rear
-segment's vertical ring (centre at `xa + 3.03`) *deep inside the front
-segment's dome*. That is geometrically intended — it is a pin through a
-hole — but it means ring B threads a long channel through front-segment
-material, and if the relief carve does not fully span that channel the two
-weld together somewhere along it.
+Three more things were wrong underneath it, all found the same way:
 
-### Suggested next steps, cheapest first
+1. **`zc = R + rt + 0.6`** left 0.05 mm of floor under the neighbouring
+   ring's relief carve — a wafer, not a floor. It is now
+   `R + rt + clearance + 0.6`.
+2. **The cup lip ran tangent to the skin.** `fits()` checked the ring
+   envelope against the body but not the *dome*, so the cup could surface at
+   a glancing angle and end in a knife edge. Moot now — no cup — but it is
+   why `fits()` grew, and shrank again, and ended up back on the ring
+   envelopes it started with.
+3. **The seam wedge had the same tilt on both sides**, which is a parallel
+   gap, not a V. The rear swept straight into the front on whichever side it
+   turned toward. The two faces need opposite tilts — `faceF` and `faceR`.
 
-1. **Probe the field along the channel.** Walk `plate()` along a line at
-   `y=0, z=zc` from `xa − 12` to `xa + 12` and print the values; find the x
-   where the gap fails to open. Ten lines of code, answers it directly.
-2. **Shrink the dome** so it barely clears the rings (`ring_dome_pad` →
-   0.2, or cap `dome` at `R + r`). If the fusion disappears, the channel
-   theory is confirmed.
-3. **Check relief ordering.** In `plate()` the relief is applied before the
-   segment's own ring is unioned in. Confirm the relief for ring B actually
-   covers ring B's full extent inside the dome, not just near the joint
-   plane.
-4. **Render cross-sections** the way the ball joint was debugged — slice
-   `plate()` at `z = zc` and at `y = 0` and contour it. That visual made
-   the ball-joint problems obvious immediately and would here too.
+Sub-voxel specks were produced where the relief tunnel left the dome at a
+glancing angle: the two surfaces crossed in a feather edge thinner than a
+voxel and marching cubes turned stray samples into lone octahedra. Removing
+the dome removed them — the coupon is clean at 0.30, 0.20 and 0.16 mm.
+`drop_debris` is still there and still worth keeping, because the shell count
+is only a useful check if a stray octahedron cannot break it.
 
-### Also still to do once it meshes
+## Range of motion, and the relief sweep
 
-- Dome/cup rotation: the dome's sphere is centred at `(xa, 0, zc)` but the
-  mechanical pivot is the ring pair. They are not co-located, so the seam
-  gap will open as the joint flexes. May need the dome centred on the
-  linkage, or accepting a wider `face_gap`.
-- Overhang audit on the tilted ring's underside rim.
-- Segment-count defaults: blob fish needs `n_segments` 5 → 2; the NURBS
-  fish needs `tail_segments` 3 → 2 (its 34.3 mm tail region gives 17.2 mm
-  segments, which fits).
+The other open question was whether the linkage would fight a yaw about the
+seam — the motion the fish actually makes. It does not, and it is the nicest
+property the design has. Measured centreline separation under that yaw:
+
+```
+yaw     0     4     8    12    16    20 deg
+sep  3.50  3.50  3.50  3.51  3.52  3.53 mm
+```
+
+0.03 mm of variation over 20°. Whatever else the pair does, turning is free.
+(This was originally the argument that the dome and the rings were compatible
+constraints. With the dome gone it is simply why the swept relief below can be
+a pure yaw: nothing else needs modelling.)
+
+What was actually stopping it: the relief carved for the neighbouring ring
+was a constant `clearance` offset around where that ring **sits**. The ring
+could therefore move `clearance` — about 4.5° at R = 7 — and then hit the
+wall of its own channel. Carving the **swept volume** instead (`_swept`,
+sampling the yaw at 4° steps; the scallop left between samples is under
+0.01 mm) gives the range back. Measured, first contact moved 6° → 14°, and
+moved from the body face to the rings, which is the end stop the design
+wants.
+
+---
+
+## Subtracting a tool, instead of building a seam
+
+The approach above -- derive a seam cavity from the body -- is superseded.
+The owner's `tool.json` is a single solid that, cut out of a body, leaves two
+interlocking pieces. It works, and it scales, which the fitted cavity would
+not have.
+
+It is deliberately **larger than the body it cuts**: the tool is 54.5 x 47 x
+41.8 mm and overshoots the skin on every side. Only the interlock in the
+middle has to sit inside the material, so getting the outer dimensions right
+does not matter -- which is exactly why it survives being scaled.
+
+Measured over the default fish, tool scaled to each joint's own section
+(`tool_cut.py`, 0.35 mm voxels):
+
+| joint | section | scale | pieces | linked | gap | thinnest |
+|---|---|---|---|---|---|---|
+| 34 | 20.1 x 37.6 | 0.98 | 2 | yes | 1.26 mm | 10.4 mm |
+| 76 | 12.2 x 25.7 | 0.60 / 0.66 | 2 | yes | 0.99 mm | 10.8 mm |
+| 101 | 8.1 x 14.6 | 0.40 / 0.38 | 2 | yes | 0.70 mm | 11.9 mm |
+
+Two linked pieces at every joint, over a 2.5x range of scale, and it does not
+much care whether the along-body scale follows the height or stays at 1.0.
+
+Linkage is not assumed, it is tested: slide one piece along the body and watch
+the overlap. Pieces that merely nest come apart at once and never overlap;
+pieces that are linked have to pass through each other, so overlap goes
+positive over a middle range before they clear. Every joint shows the second
+signature.
+
+### The belly plane is degenerate at level 0.0
+
+Worth knowing before trusting any shell count from this generator. The plate
+cut is `max(d, -Z)`, which is **exactly** zero wherever the body crosses
+z = 0. If the meshing grid puts a lattice plane there -- and the default
+`z0 = -1.2` with `res = 0.30` does, giving 3201 exact zeros -- then marching
+cubes at `level = 0.0` stitches across that sheet and welds together every
+part that touches the plate:
+
+```
+marching cubes at level  0.000:  6 shells
+                        -0.001:  8 shells   correct
+                        -0.010:  8 shells   correct
+                        +0.001:  5 shells
+```
+
+Nothing was wrong with the geometry: the field labels into 8 disjoint pieces
+under both 6- and 26-connectivity, so no grid cube can even contain material
+from two of them. `mesh()` now meshes a hair below zero, which removes the
+degeneracy and moves the surface by a thousandth of a millimetre.
+
+This is why the first tool-cut build came out at 6 shells and looked like a
+failure of the tool. It was not.
+
+**The one thing that needs work: the gap scales with the tool.** 1.26 -> 0.99
+-> 0.70 mm as the tool shrinks, so a smaller joint than the tail one would
+close it up. The clearance should be held fixed rather than scaled -- dilate
+the tool by a constant after scaling it -- and `tool_cut.py` already measures
+the number that would prove it.
+
+## The seam-cavity approach this replaced
+
+Kept for the reasoning, not as a plan. `owner_joint.json` was the target, and
+three things about it are structural, not
+cosmetic, and each one breaks an assumption the generator is built on.
+
+**1. Node order is load-bearing.** Each segment is built in this sequence:
+
+```
+ADD  vertical ring   k = 0        <- first, so both cuts apply to it
+ADD  body blob       k = 11
+CUT  ring relief     k = 1.5
+CUT  seam cavity     k = 2.75
+ADD  tilted ring     k = 3.5      <- last, so neither cut touches it
+CUT  build plate     k = 1.75     (global)
+```
+
+The seam cavity's surface passes 12.4 mm *inside* the tilted ring's
+centreline — it would swallow the ring whole — and does no damage, because the
+ring is unioned after it. That is the whole trick, and it is what makes a
+body-scale dish possible at all. The vertical ring is added first and so wears
+the relief cut, which is the scallop measured earlier. The asymmetry is the
+design, not an oversight.
+
+**2. The joint is a socket, not a butt joint.** The two segments interleave
+over 18.5 mm of body length: body 2 spans y −32.5…21, body 3 spans 2.5…56.
+Neither ends in a face at a station. The generator cuts both segments at a
+plane through the joint, which cannot express this.
+
+**3. The cavity is a clearance envelope, not an offset of the mating nose.**
+Measured over the facing region, the distance from the cavity surface to the
+next blob's surface ranges over 18 mm — so "dilate the nose by the gap" is the
+wrong rule. What it has to satisfy is weaker and local: clear the nose by at
+least the gap, terminate the segment before the next joint, and stay off the
+ring that was added before it. The dish is also *tighter* than the nose it
+receives (pole radius 18.4 mm against 22.1 mm in z), so they meet near a point
+rather than conforming — which is what stops the seam binding as it yaws.
+
+Reference proportions, for whatever the generator ends up deriving them from:
+
+| | value | as a fraction of the blob |
+|---|---|---|
+| cavity semi-axes | 18.5, 31.25, 24.0 | 0.90 x, 1.23 y, 1.01 z |
+| cavity centre vs blob centre | (0, +24, −5) | +0.94 semi-y, −0.21 semi-z |
+| cavity front pole | 7.25 mm ahead of the blob centre | |
+
+The open question is what those derive from once the body tapers. The blob
+does not exist in the generator — the body is one continuous blended field —
+so the cavity has to come from the local section instead (`halfwidth_at` and
+`top_at` already measure it). Copying the ratios above is not enough on its
+own, because segment length and body section vary independently along the
+fish, and the three constraints above are what actually have to hold.
+
+## What is left
+
+- **Nothing has been printed.** Print `rings_joint_test.stl` before trusting
+  any of this. The whole design rests on 0.55 mm gaps resolving on a real
+  printer, and no amount of field probing substitutes for that.
+- The overhang audit is now `check_print.py`, and it passes, but it only
+  looks at the joint coupon. The fins, the eyes and the caudal fan have never
+  been through it.
+- The proud arc of the tilted ring is a shallow arch. `check_print.py` says
+  it is anchored, not floating, but "anchored" is not "prints cleanly" —
+  around 70% layer-to-layer overlap at the shallowest point. This is the most
+  likely thing to look bad on the first print.
+- The seam is a visible V-groove and the rings show through it. Nothing hides
+  the linkage any more; whether that reads as mechanical or as part of the toy
+  is a call to make on a print, not on a render.
+- The joint has slop. Only the rings hold the segments together, so a segment
+  can be pulled back until the rings tighten and pushed forward until the
+  faces meet — roughly `face_gap` of travel. Normal for a linked-ring flexi,
+  and the trade the ball joint used to hide, but it will rattle.
+- Segment-count defaults: the blob fish needs `n_segments` 5 → 2 (done in
+  this file); the NURBS fish needs `tail_segments` 3 → 2 (its 34.3 mm tail
+  region gives 17.2 mm segments, which fits) — not done.
 - Port to `nurbscore.js` for the browser designer, and extend
   `parity_test.js` (the Python↔JS harness lives in the session scratchpad
   and is **not** preserved — it will need rebuilding from `dump_ref.py`
   patterns described in the main README).
 - The ball-joint knobs (`joint_capture`, `joint_ball_max`, `joint_neck`)
   become dead once rings land; remove them then, not before.
+- Build time is 3.5 min at `res = 0.30`, up from 2.5 min before the swept
+  relief, which costs ~25 extra full-grid torus evaluations. Restricting the
+  sweep to a box around each joint would get most of that back.
