@@ -1,17 +1,27 @@
-# Interlocked ring joints — work in progress
+# Interlocked ring joints
 
-Replacement for the flexi fish segment linkage. **Nothing here is wired into
-the shipping generator.** `flexifish.py` on this branch is the working
-plate-cut ball joint (from PR #8); the ring code lives only in this folder.
+Second linkage for the flexi fish. **It is wired in**: `joint_style` selects
+it in `flexifish.py`, `flexifish_nurbs.py` and both browser designers, and
+the ball joint stays the default. The solid it subtracts lives in
+`/joint_tool.py`; this folder is the working-out and the checks.
 
-Branch: `claude/ring-joints-wip`, based on `9302e59` (ball joints).
-Not for merging into `main` as-is — see "what is left" at the bottom.
+```bash
+python3 flexifish.py --config <(echo '{"joint_style":"tool"}') --coupon
+python3 flexifish_nurbs.py --config <(echo '{"joint_style":"tool"}')
+```
+or the **Linkage: Ball / Rings** toggle in either designer.
 
-**Status: it builds.** The fusion that blocked the last session is fixed, the
-joint meshes as separate parts at print resolution, both rings are real and
-visible, and it swings past its design range. The linkage is the *only* thing
-holding a joint together — there is no ball, no socket, no dome. Nothing has
-been printed yet.
+**Status: it builds, and it is linked.** The fusion that blocked an earlier
+session is fixed, the fish meshes as separate parts at print resolution, both
+rings are real and visible, and every joint passes the slide test. The linkage
+is the *only* thing holding a joint together — there is no ball, no socket, no
+dome. Nothing has been printed yet.
+
+What the wiring costs, and it is not small: a ring joint eats about 26 mm of
+body against a ball joint's 10, so the default fish drops from five segments
+to two. Sizing reduces the count and says so rather than building a fish whose
+segments come out fused. That trade is the reason the ball joint is still the
+default.
 
 ---
 
@@ -230,8 +240,8 @@ gets any slimmer.
 | `sdf_json.py` | reads a scene from the repo's `sdf_editor.html` and evaluates it as an SDF, so the owner's own model can be measured directly instead of paraphrased |
 | `check_against_editor.py` | **proves `sdf_json.py` agrees with the editor** — lifts the editor's own `PRIMS` / `smin` / `invRot` / `sceneSDF` out of the HTML, runs them under node, and compares. Currently 1.9e-7 max error, 100% sign agreement over 4000 points |
 | `owner_joint.json` | the owner's two-segment reference joint, and the thing the generator is meant to reproduce |
-| `tool.json` | the owner's joint **tool**: one solid that, subtracted from a body, leaves two interlocking pieces |
-| `tool_cut.py` | applies that tool at each joint of the fish, scaled to the local section, and checks the result — pieces, linkage, gap, thinnest feature |
+| `tool.json` | the owner's joint **tool**: one solid that, subtracted from a body, leaves two interlocking pieces. Body 1 of this file is what `/joint_tool.py` embeds, so this is the source of truth for it |
+| `tool_cut.py` | **the ring joints the shipping generator builds** — cuts the whole default fish with `joint_style="tool"` and checks pieces, linkage and gap. Runs against `flexifish.py` and `joint_tool.py`, not the WIP copy, so it is a regression test rather than a study |
 | `describe_scene.py` | **what a scene is actually made of**: node order per body, how far the segments interleave, and how the seam cavity sits against the rings it passes through |
 | `flexifish_rings_WIP.py` | full `flexifish.py` with rings swapped in |
 | `flexifish_rings.diff` | that same work as a unified diff against this branch's `flexifish.py` |
@@ -247,7 +257,7 @@ python3 check_swing.py 1    # range of motion at the middle joint  (~11 s)
 python3 check_print.py 1    # islands at the middle joint  (~10 s)
 python3 check_against_editor.py          # reader vs the editor  (~2 s, needs node)
 python3 describe_scene.py                # structure of the reference joint  (~1 min)
-python3 tool_cut.py                      # subtract the tool at every joint  (~3 min)
+python3 tool_cut.py                      # the shipping ring joints  (~8 min)
 python3 flexifish_rings_WIP.py --out rings.stl --coupon   # ~3.5 min
 ```
 
@@ -263,6 +273,17 @@ check_print.py    largest island 0.06 mm3 -- a couple of voxels
 coupon shells     2 at every joint, at 0.30 / 0.20 / 0.16 mm, no specks
 rings.stl         614946 tris, manifold, shells = 8 (expected 8)
 rings_joint_test  106344 tris, manifold, shells = 2 (expected 2)
+```
+
+and from the shipping generators, `joint_style="tool"` at `res = 0.30`:
+
+```
+tool_cut.py       4 body pieces, expected 4; every consecutive pair linked;
+                  gaps 1.26 / 0.99 / 0.49 mm at joints 34 / 76 / 101
+flexifish.py      622084 tris, manifold, shells = 8 (expected 8)
+   --coupon       113820 tris, manifold, shells = 2 (expected 2)
+flexifish_nurbs   585240 tris, manifold, shells = 8 (expected 8)
+ball joints       unchanged: 11 shells (blob), 10 (NURBS), both manifold
 ```
 
 ---
@@ -394,11 +415,65 @@ degeneracy and moves the surface by a thousandth of a millimetre.
 This is why the first tool-cut build came out at 6 shells and looked like a
 failure of the tool. It was not.
 
-**The one thing that needs work: the gap scales with the tool.** 1.26 -> 0.99
--> 0.70 mm as the tool shrinks, so a smaller joint than the tail one would
-close it up. The clearance should be held fixed rather than scaled -- dilate
-the tool by a constant after scaling it -- and `tool_cut.py` already measures
-the number that would prove it.
+**The gap scales with the tool.** 1.26 -> 0.99 -> 0.49 mm as the tool shrinks,
+so a joint much smaller than the tail one would close it up. `joint_gap` pins
+it instead: the tool is eroded (or dilated) by half the difference *after*
+scaling, so every joint gets the same clearance whatever its section. Left at
+0 the tool keeps its own, which is what the table above measures.
+
+## Wiring it into the generators
+
+`joint_tool.py` at the repo root holds the solid — the eight nodes of
+`tool.json`'s body 1, verbatim, plus an evaluator that agrees with
+`sdf_json.py` to 0.0 — and the numbers derived from it. `flexifish.py` places
+one per joint; `flexifish_nurbs.py` inherits that unchanged.
+
+Two parameters: `joint_style` (`"ball"` | `"tool"`) and `joint_gap`.
+
+**How much body a joint costs.** The tool's bounding box reaches 11 mm ahead
+of the joint and 35.75 mm behind, but most of that tail is the wall of a cup
+that wraps the rear piece from *outside* the skin. Cutting a real section,
+removal starts at the tool's very front and has fallen to a few percent by 15
+behind. So the joint costs `FOOTPRINT_AHEAD + FOOTPRINT_BEHIND` = 26 tool
+units of body, and the layouts space the joints at least that far apart,
+scaled.
+
+That figure is a quality floor, not a hard one. The hard one was measured, by
+cutting one fish with two tools at a range of spacings and labelling the
+result:
+
+| spacing (tool units) | pieces | linked |
+|---|---|---|
+| 10 | 5 — two of them debris under 2 mm³ | — |
+| 12 | 3 | yes |
+| 14 … 34 | 3 | yes |
+
+Below 12 the second tool cuts through the first one's interlock; that is
+`SHATTER_SPACING`, and sizing raises `SystemExit` there rather than warn.
+Between 12 and 26 the joint works but the segment is nothing but shroud, with
+none of its own body showing — a warning, since the dorsal fin can force it.
+
+**What each generator does now.** The default blob fish: `n_segments` 5 → 2,
+joints at 34 / 76 / 101, gaps 1.26 / 0.99 / 0.49 mm, four linked body pieces
+at 0.35 mm voxels, 8 manifold shells at print resolution (2 segments + head +
+tail + 4 fins), coupon 2. The default NURBS fish: `tail_segments` 3 → 1,
+joints at 45 / 67 / 101, 8 manifold shells; its dorsal segment is 21.8 mm
+against the 22.7 mm the joints reach, so it warns.
+
+**The browser designers.** `fish_designer.html` never built joint geometry —
+it grooves the cut lines and leaves the real plate to `flexifish.py` — so it
+takes the layout rule and the notes only. `fish_designer_nurbs.html` does
+build the printable plate, so it carries a full JS port of the solid;
+`toolRaw` is exported from its core and agrees with `joint_tool.raw` to
+3e-14, and `plateSDF` agrees with `NurbsFishBuilder.plate` in sign at every
+sampled point. Note that `buildMesh` inlines the body build and calls the
+segmenter itself — patching `plateSDF` alone changes the one-off queries and
+not a single exported triangle.
+
+Two bugs fell out of the port, both pre-existing and both in the designers:
+their `lin()` divided by zero for a single-segment layout, so every cut came
+out `NaN`; and the NURBS region summary quoted the `tail_segments` slider
+rather than the cuts the layout made.
 
 ## The seam-cavity approach this replaced
 
@@ -472,15 +547,15 @@ fish, and the three constraints above are what actually have to hold.
   can be pulled back until the rings tighten and pushed forward until the
   faces meet — roughly `face_gap` of travel. Normal for a linked-ring flexi,
   and the trade the ball joint used to hide, but it will rattle.
-- Segment-count defaults: the blob fish needs `n_segments` 5 → 2 (done in
-  this file); the NURBS fish needs `tail_segments` 3 → 2 (its 34.3 mm tail
-  region gives 17.2 mm segments, which fits) — not done.
-- Port to `nurbscore.js` for the browser designer, and extend
-  `parity_test.js` (the Python↔JS harness lives in the session scratchpad
-  and is **not** preserved — it will need rebuilding from `dump_ref.py`
-  patterns described in the main README).
-- The ball-joint knobs (`joint_capture`, `joint_ball_max`, `joint_neck`)
-  become dead once rings land; remove them then, not before.
+- `joint_gap` is implemented and its arithmetic is checked, but no fish has
+  been cut end-to-end with it pinned. The default (0, the tool's own) is what
+  every number above measures.
+- The NURBS default warns: its dorsal segment is 21.8 mm and the two joints
+  around it reach 22.7 mm. It builds and it is linked, but that segment shows
+  none of its own body. Widening the dorsal region would fix it.
+- The ball-joint knobs (`joint_capture`, `joint_ball_max`, `joint_neck`) stay
+  live — the ball joint is still the default, and it is the one that fits five
+  segments in a 113 mm fish.
 - Build time is 3.5 min at `res = 0.30`, up from 2.5 min before the swept
   relief, which costs ~25 extra full-grid torus evaluations. Restricting the
   sweep to a box around each joint would get most of that back.

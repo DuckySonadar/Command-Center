@@ -144,7 +144,8 @@ const FIXED = {
   pec_thickness: 3.6, pelvic_thickness: 3.4,
   tail_thick_root: 4.0, tail_thick_tip: 2.2,
   fin_edge: 0.9, fin_fillet: 2.8,
-  joint_ball_max: 5.0, joint_capture: 0.20, joint_neck: 0.40
+  joint_ball_max: 5.0, joint_capture: 0.20, joint_neck: 0.40,
+  joint_style: 'ball', joint_gap: 0.0
 };
 
 const DEFAULT_SHAPE = {
@@ -590,12 +591,148 @@ function halfwidthAt(x, z, S) {
   return 0;
 }
 
+// ---------- the interlocking-ring joint (joint_style: 'tool') -----------
+// A single solid, subtracted from the finished body: what is left is two
+// pieces that cannot be pulled apart, because a ring belonging to each passes
+// through the other. It is deliberately larger than any body it cuts, so only
+// the interlock is ever inside the material and the rest hangs outside -- that
+// overshoot is what lets it simply be scaled to the local section instead of
+// solved for it. Ported from joint_tool.py, which carries the derivation.
+const TOOL = {
+  PLATE: 8.0, ANCHOR: 8.5,      // its build plate, and the joint, in its frame
+  HW_REF: 20.5, H_REF: 38.75,   // the body section it was authored against
+  AHEAD: 11.0, BEHIND: 15.0,    // body it consumes each way, in its own units
+  MIN_SPACING: 26.0,            // ...so joints no closer than the sum of those
+  SHATTER: 12.0,                // closer still and the two cuts collide
+  THICK: 1.20                   // its own clearance, at scale 1
+};
+
+// tool.json, body 1, in file order. Order is load-bearing: a shape added after
+// a cut is immune to it, which is what lets the big seam cavity be body-scale
+// without destroying the linkage that passes through it.
+//   [op, kind, blend k, position, Euler degrees, dimensions]
+// torus d = [ring radius, tube radius]; ellipsoid d = full diameters; the
+// plane cut removes everything below its own z.
+const TOOL_NODES = [
+  ['add', 'ellipsoid', 2.75, [0, 29, 27], [-42, 0, 0], [54.5, 45.5, 82.5]],
+  ['cut', 'ellipsoid', 5.00, [0, 47.5, 29], [-51, 0, 0], [46, 59, 78.5]],
+  ['cut', 'ellipsoid', 4.25, [0, 25, 9], [0, 0, 0], [15.5, 22, 14]],
+  ['add', 'torus', 1.50, [0, 5, 15.5], [30, 0, 0], [8, 5.75, 0]],
+  ['cut', 'torus', 2.00, [0, 12, 19], [0, 90, 0], [8, 3, 0]],
+  ['cut', 'torus', 3.50, [0, 4.5, 15], [30, 0, 0], [8.5, 2.75, 0]],
+  ['cut', 'ellipsoid', 1.50, [0, -6, 11], [-58, 0, 0], [30, 18, 14]],
+  ['cut', 'plane', 2.00, [0, 0, 8], [0, 0, 0], [0, 0, 0]]
+];
+const TOOL_DEG = Math.PI / 180;
+
+function toolSmin(a, b, k) {
+  if (k <= 0) return Math.min(a, b);
+  let h = 0.5 + 0.5 * (b - a) / k;
+  h = h < 0 ? 0 : h > 1 ? 1 : h;
+  return b + (a - b) * h - k * h * (1 - h);
+}
+
+function toolNodeSDF(n, X, Y, Z) {
+  const pos = n[3], rot = n[4], d = n[5];
+  let x = X - pos[0], y = Y - pos[1], z = Z - pos[2];
+  // world -> local: the editor rotates a shape by Rz*Ry*Rx, so the inverse
+  // undoes Z first, then Y, then X
+  for (let ax = 2; ax >= 0; ax--) {
+    const a = -rot[ax] * TOOL_DEG;
+    if (!a) continue;
+    const c = Math.cos(a), sn = Math.sin(a);
+    if (ax === 0) { const t = c * y - sn * z; z = sn * y + c * z; y = t; }
+    else if (ax === 1) { const t = c * z - sn * x; x = sn * z + c * x; z = t; }
+    else { const t = c * x - sn * y; y = sn * x + c * y; x = t; }
+  }
+  if (n[1] === 'torus') {
+    const q = Math.hypot(x, y) - d[0];
+    return Math.hypot(q, z) - d[1];
+  }
+  if (n[1] === 'ellipsoid') {
+    const a = d[0] / 2, b = d[1] / 2, c = d[2] / 2;
+    const k0 = Math.hypot(x / a, y / b, z / c);
+    const k1 = Math.max(Math.hypot(x / (a * a), y / (b * b), z / (c * c)), 1e-9);
+    return k0 * (k0 - 1) / k1;
+  }
+  return Z - pos[2];                      // plane: the region the cut removes
+}
+
+function toolRaw(x, y, z) {
+  let d = null;
+  for (const n of TOOL_NODES) {
+    const f = toolNodeSDF(n, x, y, z);
+    if (n[0] === 'add') d = d === null ? f : toolSmin(d, f, n[2]);
+    else d = -toolSmin(-d, f, n[2]);      // smax(d, -f, k)
+  }
+  return d;
+}
+
+function toolSDF(x, y, z, j, gap) {
+  // the generator runs x nose->tail and the tool runs y, so the axes swap
+  const tx = y / j.sWide;
+  const ty = (x - j.xa) / j.sLong + TOOL.ANCHOR;
+  const tz = z / j.sTall + TOOL.PLATE;
+  const s = Math.min(j.sWide, Math.min(j.sLong, j.sTall));
+  // times the smallest scale, so it stays an under-estimate of true distance
+  let d = toolRaw(tx, ty, tz) * s;
+  if (gap > 0) d += (TOOL.THICK * s - gap) / 2;
+  return d;
+}
+
+function toolScales(x, S) {
+  // fore-aft follows the body's height, not its length: the section is what
+  // decides how big an interlock will fit
+  const top = topAt(x, S);
+  return { wide: halfwidthAt(x, top * 0.45, S) / TOOL.HW_REF,
+           long: top / TOOL.H_REF, tall: top / TOOL.H_REF };
+}
+
+function toolSegmentCap(first, last, n, S, notes) {
+  const need = TOOL.MIN_SPACING * toolScales(first, S).long;
+  const m = Math.max(1, Math.min(n, Math.floor((last - first) / need)));
+  if (m !== n)
+    notes.push('ring joints: ' + n + ' segments would space them ' +
+      ((last - first) / n).toFixed(1) + ' mm apart and one needs ' +
+      need.toFixed(1) + ' mm — building ' + m + '. Lengthen the tail ' +
+      'region, or switch back to ball joints.');
+  return m;
+}
+
+function toolJointNotes(p, cuts, S) {
+  const notes = [], errors = [], info = [];
+  for (let i = 0; i < cuts.length; i++) {
+    const sc = toolScales(cuts[i], S);
+    const sm = Math.min(sc.wide, Math.min(sc.long, sc.tall));
+    const ahead = TOOL.AHEAD * sc.long, behind = TOOL.BEHIND * sc.long;
+    const gap = p.joint_gap > 0 ? p.joint_gap : TOOL.THICK * sm;
+    if (i) {
+      const got = cuts[i] - cuts[i - 1], want = info[i - 1].behind + ahead;
+      if (got < TOOL.SHATTER * sc.long)
+        errors.push('joints at x=' + cuts[i - 1].toFixed(0) + ' and x=' +
+          cuts[i].toFixed(0) + ' are only ' + got.toFixed(1) + ' mm apart: ' +
+          'the two cuts destroy each other’s linkage and the fish comes ' +
+          'out in loose pieces');
+      else if (got < want)
+        notes.push('joints at x=' + cuts[i - 1].toFixed(0) + ' and x=' +
+          cuts[i].toFixed(0) + ': ' + got.toFixed(1) + ' mm apart, but they ' +
+          'reach ' + want.toFixed(1) + ' mm — that segment is all shroud');
+    }
+    if (gap < 0.3)
+      notes.push('joint x=' + cuts[i].toFixed(0) + ': only ' + gap.toFixed(2) +
+        ' mm of clearance — the section is small, so the joint is too');
+    info.push({ xa: cuts[i], sWide: sc.wide, sLong: sc.long, sTall: sc.tall,
+                gap: gap, ahead: ahead, behind: behind });
+  }
+  return { notes: notes, errors: errors, info: info };
+}
+
 // ---------- region-driven segmentation ----------
 function layout(p, S) {
-  const out = { cuts: [], errors: [], dorsalOnHead: false,
+  const out = { cuts: [], errors: [], notes: [], dorsalOnHead: false,
                 trimLo: 0, trimHi: 0 };
   const last = S.b3 - p.tail_root_len;
-  const nt = S.tailSegments;
+  let nt = S.tailSegments;
   if (nt < 1) { out.errors.push('tail_segments must be >= 1'); return out; }
   if (last - S.b2 < nt * p.min_seg_len) {
     out.errors.push('tail region too short for ' + nt + ' segments (max ' +
@@ -607,9 +744,15 @@ function layout(p, S) {
     const rb = Math.min(Math.max(0.42 * g.chord, 3.0), 5.0);
     need = Math.max(need, g.att[0] + rb + p.clearance + p.wall + 1.0);
   }
-  const lin = (a, b, m) =>
-    Array.from({ length: m }, (_, i) => a + (b - a) * i / (m - 1));
+  // m === 1 is np.linspace(a, b, 1) == [a]; without the guard a
+  // single-segment layout divides by zero and every cut comes out NaN
+  const lin = (a, b, m) => m <= 1 ? [a]
+    : Array.from({ length: m }, (_, i) => a + (b - a) * i / (m - 1));
   out.dorsalOnHead = S.b1 < need || S.b2 - S.b1 < p.min_seg_len;
+  // a ring joint is long; the tail region may not hold as many of them as it
+  // holds ball joints (the dorsal region's own pair is checked afterwards)
+  if (p.joint_style === 'tool')
+    nt = toolSegmentCap(S.b2, last, nt, S, out.notes);
   if (out.dorsalOnHead) {
     if (S.b2 < need) {
       out.errors.push('pectoral/pelvic fins attach behind the first joint ' +
@@ -751,6 +894,24 @@ function finCavityAt(F, x, y, z, p) {
   }
   return cav;
 }
+function plateToolAt(x, y, z, C, bodyF) {
+  // no per-segment assembly at all: the body is finished, and one tool comes
+  // out of it per joint
+  const p = C.p;
+  let F = bodyF;
+  for (const Fn of C.fins)
+    if (Math.abs(x - Fn.cx) < Fn.boss + 5)
+      F = Math.max(F, -finCavityAt(Fn, x, y, z, p));
+  for (const j of C.joints) {
+    // the tool's own extent is 11 ahead of its anchor and 35.75 behind;
+    // outside that the subtraction cannot change anything, so skipping is
+    // exact rather than an approximation
+    if (x < j.xa - 11.5 * j.sLong || x > j.xa + 36.5 * j.sLong) continue;
+    F = Math.max(F, -toolSDF(x, y, z, j, p.joint_gap));
+  }
+  return F;
+}
+
 function plateAt(x, y, z, C, bodyF) {
   const J = C.joints, p = C.p, ay = Math.abs(y);
   let F = bodyF;
@@ -800,9 +961,12 @@ function prepare(shape, overrides, showCuts) {
   C.cuts = lay.cuts; C.dorsalOnHead = lay.dorsalOnHead;
   C.trimLo = lay.trimLo; C.trimHi = lay.trimHi;
   C.errors = C.errors.concat(lay.errors);
+  C.notes = (lay.notes || []).slice();
   if (!lay.errors.length) {
-    const jn = jointNotes(p, C.cuts, S);
-    C.notes = jn.notes; C.errors = C.errors.concat(jn.errors);
+    const jn = p.joint_style === 'tool' ? toolJointNotes(p, C.cuts, S)
+                                        : jointNotes(p, C.cuts, S);
+    C.notes = C.notes.concat(jn.notes);
+    C.errors = C.errors.concat(jn.errors);
     C.joints = jn.info;
   }
 
@@ -1015,7 +1179,8 @@ function fishSDF(x, y, z, C) {
 function plateSDF(x, y, z, C) {
   // the real printable plate: segmented body with joint pins, cavities
   // and fin sockets, plus the free-floating fin parts
-  const out = plateAt(x, y, z, C, bodySDF(x, y, z, C));
+  const split = C.p.joint_style === 'tool' ? plateToolAt : plateAt;
+  const out = split(x, y, z, C, bodySDF(x, y, z, C));
   return Math.min(out, finPartsSDF(x, y, z, C));
 }
 
@@ -1036,6 +1201,10 @@ function buildMesh(shape, overrides, res, showCuts, field) {
   const nz = Math.max(4, Math.ceil((B.z1 - B.z0) / res) + 1);
   const vol = new Float32Array(nx * ny * nz);
   const p = C.p, S = C.S;
+  // this loop inlines the body build for speed and so calls the segmenter
+  // itself; plateSDF is the same choice made for one-off queries, and the two
+  // have to agree or the preview and the export are different fish
+  const split = p.joint_style === 'tool' ? plateToolAt : plateAt;
   const caudCache = C.caud ? new Float64Array(nz) : null;
   const dorsCache = C.dors ? new Float64Array(nz) : null;
   let idx = 0;
@@ -1111,7 +1280,7 @@ function buildMesh(shape, overrides, res, showCuts, field) {
         }
         // the body is complete: segment it (plate) or groove it (view),
         // then drop in the separate fin parts, which neither touches
-        if (field === 'plate') d = plateAt(x, y, z, C, d);
+        if (field === 'plate') d = split(x, y, z, C, d);
         else if (C.showCuts && C.cuts.length) d = cutGrooves(d, x, C);
         for (let f = 0; f < C.fins.length; f++) {
           const pr = pres[f];
@@ -1139,7 +1308,12 @@ function regionSummary(C) {
   if (!C.bounds) return '';
   const S = C.S, p = C.p;
   const last = S.b3 - p.tail_root_len;
-  const nt = S.tailSegments;
+  // count the cuts the layout actually made, not the slider: a ring linkage
+  // caps them, and a summary that still quoted the slider would be a lie
+  // 0.01, not an epsilon: the cuts are rounded to 1e-4, so the one sitting on
+  // the region boundary lands just *below* S.b2 and a tight test drops it
+  const inTail = C.cuts.filter(c => c > S.b2 - 0.01).length;
+  const nt = Math.max(inTail - 1, 1);
   const seg = ((last - S.b2) / nt).toFixed(1);
   const parts = [];
   if (C.dorsalOnHead) {
@@ -1241,7 +1415,11 @@ function surfaceNets(vol, nx, ny, nz, ox, oy, oz, res) {
 const NurbsCore = { DEFAULTS, FIXED, DEFAULT_SHAPE, NS, clone, deepMerge,
                     nurbsEval, sampleCurve, resolveShape, layout, prepare,
                     coreSDF, fishSDF, bodySDF, plateSDF, buildMesh,
-                    regionSummary, topAt, halfwidthAt };
+                    regionSummary, topAt, halfwidthAt,
+                    // exported so the ring-joint solid can be held against
+                    // joint_tool.py's, which is the only way to know the port
+                    // is faithful -- see experiments/ring_joints
+                    TOOL, toolRaw, toolSDF, toolScales };
 if (typeof module !== 'undefined' && module.exports) module.exports = NurbsCore;
 root.NurbsCore = NurbsCore;
 })(typeof self !== 'undefined' ? self : globalThis);
@@ -1272,7 +1450,8 @@ const spec = {                       // the shape being drawn
   sliders: NC.clone(NC.DEFAULT_SHAPE.sliders),
   mouth: NC.clone(NC.DEFAULT_SHAPE.mouth)
 };
-const face = Object.assign({}, NC.DEFAULTS);   // eye/lip FishParams
+const face = Object.assign({}, NC.DEFAULTS,    // eye/lip FishParams
+                          { joint_style: 'ball' });
 
 // ---------- sliders panel ----------
 const SLIDERS = [
@@ -1368,6 +1547,29 @@ SLIDERS.forEach(([title, rows]) => {
     });
   });
 });
+// linkage: ball-and-socket, or the subtracted interlocking rings. It is not
+// drawn in the 3D preview either way, but it decides how many segments fit
+// and it is what Save STL exports.
+const jrow = document.createElement('div');
+jrow.className = 'row';
+const jlab = document.createElement('label');
+jlab.textContent = 'Linkage';
+const jseg = document.createElement('div');
+jseg.className = 'seg';
+[['ball', 'Ball'], ['tool', 'Rings']].forEach(([v, t]) => {
+  const btn = document.createElement('button');
+  btn.textContent = t;
+  btn.className = v === face.joint_style ? 'on' : '';
+  btn.addEventListener('click', () => {
+    face.joint_style = v;
+    [...jseg.children].forEach(c => c.classList.toggle('on', c === btn));
+    requestBuild(false);
+    if (mode !== '3d') { markDirty(); redraw2d(); }
+  });
+  jseg.appendChild(btn);
+});
+jrow.append(jlab, jseg); panel.appendChild(jrow);
+
 const foot = document.createElement('p');
 foot.style.cssText = 'color:#8fa0af;font-size:11.5px;margin-top:14px';
 foot.textContent = 'Draw the fish in the Side/Top views; regions and joints ' +

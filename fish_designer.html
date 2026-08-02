@@ -108,6 +108,7 @@ const DEFAULTS = {
 };
 const FIXED = {
   tail_root_len: 12.0, fin_margin: 2.2, blend: 9.0,
+  joint_style: 'ball', joint_gap: 0.0,
   clearance: 0.55, wall: 1.6, face_gap: 1.0, min_seg_len: 6.0,
   swing_front_deg: 16.0, swing_rear_deg: 12.0,
   dorsal_thickness: 2.8,
@@ -196,19 +197,82 @@ function halfwidthAt(x, z, C) {
   return hw;
 }
 
-function layout(p, L) {
+// ---------- the interlocking-ring joint (joint_style: 'tool') -----------
+// That linkage is a single solid subtracted from the finished body; joint_tool.py
+// holds the solid itself and the derivation of every number here. Nothing in
+// this designer draws a joint of either kind -- the grooves only mark where the
+// cuts fall -- but the ring joint is long enough to change where they can fall,
+// so the layout has to know about it.
+const TOOL = {
+  HW_REF: 20.5, H_REF: 38.75,   // the body section it was authored against
+  AHEAD: 11.0, BEHIND: 15.0,    // body it consumes each way, in its own units
+  MIN_SPACING: 26.0,            // ...so joints no closer than the sum of those
+  SHATTER: 12.0,                // closer still and the two cuts collide
+  THICK: 1.20                   // its own clearance, at scale 1
+};
+
+function toolScales(x, C) {
+  const top = topAt(x, C);
+  return { wide: halfwidthAt(x, top * 0.45, C) / TOOL.HW_REF,
+           long: top / TOOL.H_REF, tall: top / TOOL.H_REF };
+}
+
+function toolSegmentCap(first, last, n, C, notes) {
+  const need = TOOL.MIN_SPACING * toolScales(first, C).long;
+  const m = Math.max(1, Math.min(n, Math.floor((last - first) / need)));
+  if (m !== n)
+    notes.push('ring joints: ' + n + ' segments would space them ' +
+      ((last - first) / n).toFixed(1) + ' mm apart and one needs ' +
+      need.toFixed(1) + ' mm \u2014 showing ' + m + '. Lengthen the fish, ' +
+      'or switch back to ball joints.');
+  return m;
+}
+
+function toolJointNotes(p, cuts, C) {
+  const notes = [], errors = [], info = [];
+  for (let i = 0; i < cuts.length; i++) {
+    const s = toolScales(cuts[i], C);
+    const sm = Math.min(s.wide, Math.min(s.long, s.tall));
+    const ahead = TOOL.AHEAD * s.long, behind = TOOL.BEHIND * s.long;
+    const gap = p.joint_gap > 0 ? p.joint_gap : TOOL.THICK * sm;
+    if (i) {
+      const got = cuts[i] - cuts[i - 1], want = info[i - 1].behind + ahead;
+      if (got < TOOL.SHATTER * s.long)
+        errors.push('joints at x=' + cuts[i - 1].toFixed(0) + ' and x=' +
+          cuts[i].toFixed(0) + ' are only ' + got.toFixed(1) + ' mm apart: ' +
+          'the two cuts would destroy each other\u2019s linkage');
+      else if (got < want)
+        notes.push('joints at x=' + cuts[i - 1].toFixed(0) + ' and x=' +
+          cuts[i].toFixed(0) + ': ' + got.toFixed(1) + ' mm apart, but they ' +
+          'reach ' + want.toFixed(1) + ' mm \u2014 that segment is all shroud');
+    }
+    if (gap < 0.3)
+      notes.push('joint x=' + cuts[i].toFixed(0) + ': only ' + gap.toFixed(2) +
+        ' mm of clearance \u2014 the section is small, so the joint is too');
+    info.push({ xa: cuts[i], sWide: s.wide, sLong: s.long, sTall: s.tall,
+                gap: gap, ahead: ahead, behind: behind });
+  }
+  return { notes: notes, errors: errors, info: info };
+}
+
+function layout(p, L, C) {
   const first = p.head_length, last = L - p.tail_root_len;
   const xd = p.len_nose_to_dorsal;
   const wd = p.dorsal_length + 2 * p.fin_margin;
-  const n = Math.round(p.n_segments);
-  const out = { cuts: [], errors: [], dorsalOnHead: false, trimLo: 0, trimHi: 0 };
+  let n = Math.round(p.n_segments);
+  const out = { cuts: [], errors: [], notes: [], dorsalOnHead: false,
+                trimLo: 0, trimHi: 0 };
   if (n < 1) { out.errors.push("n_segments must be >= 1"); return out; }
+  if (p.joint_style === 'tool') n = toolSegmentCap(first, last, n, C, out.notes);
   if (last - first < n * p.min_seg_len) {
     out.errors.push("body too short for " + n + " segments (max " +
       Math.floor((last - first) / p.min_seg_len) + " at these lengths)");
     return out;
   }
-  const lin = (a, b, m) => Array.from({ length: m }, (_, i) => a + (b - a) * i / (m - 1));
+  // m === 1 is np.linspace(a, b, 1) == [a]; without the guard the
+  // single-segment layouts divide by zero and every cut comes out NaN
+  const lin = (a, b, m) => m <= 1 ? [a]
+    : Array.from({ length: m }, (_, i) => a + (b - a) * i / (m - 1));
   if (xd - wd / 2 <= first + 0.5) {
     out.dorsalOnHead = true;
     out.cuts = lin(first, last, n + 1);
@@ -304,12 +368,15 @@ function prepare(overrides, showCuts) {
              sx: sr + 0.6, sz: 0.40 * (2 * rzh - p.belly_drop), sr,
              k: (4.0 + 9.0 * pt) * Math.min(hl / 34.0, 1.6) };
 
-  const lay = layout(p, L);
-  C.cuts = lay.cuts; C.errors = lay.errors.slice(); C.notes = [];
+  const lay = layout(p, L, C);
+  C.cuts = lay.cuts; C.errors = lay.errors.slice();
+  C.notes = (lay.notes || []).slice();
   C.trimLo = lay.trimLo; C.trimHi = lay.trimHi;
   if (!C.errors.length) {
-    const jn = jointNotes(p, C.cuts, C);
-    C.notes = jn.notes; C.errors = C.errors.concat(jn.errors);
+    const jn = p.joint_style === 'tool' ? toolJointNotes(p, C.cuts, C)
+                                        : jointNotes(p, C.cuts, C);
+    C.notes = C.notes.concat(jn.notes);
+    C.errors = C.errors.concat(jn.errors);
     C.joints = jn.info;
   }
 
@@ -627,6 +694,7 @@ const DEFAULTS = {
 };
 const FIXED = {
   tail_root_len: 12.0, fin_margin: 2.2, blend: 9.0,
+  joint_style: 'ball', joint_gap: 0.0,
   clearance: 0.55, wall: 1.6, face_gap: 1.0, min_seg_len: 6.0,
   swing_front_deg: 16.0, swing_rear_deg: 12.0,
   dorsal_thickness: 2.8,
@@ -715,19 +783,82 @@ function halfwidthAt(x, z, C) {
   return hw;
 }
 
-function layout(p, L) {
+// ---------- the interlocking-ring joint (joint_style: 'tool') -----------
+// That linkage is a single solid subtracted from the finished body; joint_tool.py
+// holds the solid itself and the derivation of every number here. Nothing in
+// this designer draws a joint of either kind -- the grooves only mark where the
+// cuts fall -- but the ring joint is long enough to change where they can fall,
+// so the layout has to know about it.
+const TOOL = {
+  HW_REF: 20.5, H_REF: 38.75,   // the body section it was authored against
+  AHEAD: 11.0, BEHIND: 15.0,    // body it consumes each way, in its own units
+  MIN_SPACING: 26.0,            // ...so joints no closer than the sum of those
+  SHATTER: 12.0,                // closer still and the two cuts collide
+  THICK: 1.20                   // its own clearance, at scale 1
+};
+
+function toolScales(x, C) {
+  const top = topAt(x, C);
+  return { wide: halfwidthAt(x, top * 0.45, C) / TOOL.HW_REF,
+           long: top / TOOL.H_REF, tall: top / TOOL.H_REF };
+}
+
+function toolSegmentCap(first, last, n, C, notes) {
+  const need = TOOL.MIN_SPACING * toolScales(first, C).long;
+  const m = Math.max(1, Math.min(n, Math.floor((last - first) / need)));
+  if (m !== n)
+    notes.push('ring joints: ' + n + ' segments would space them ' +
+      ((last - first) / n).toFixed(1) + ' mm apart and one needs ' +
+      need.toFixed(1) + ' mm \u2014 showing ' + m + '. Lengthen the fish, ' +
+      'or switch back to ball joints.');
+  return m;
+}
+
+function toolJointNotes(p, cuts, C) {
+  const notes = [], errors = [], info = [];
+  for (let i = 0; i < cuts.length; i++) {
+    const s = toolScales(cuts[i], C);
+    const sm = Math.min(s.wide, Math.min(s.long, s.tall));
+    const ahead = TOOL.AHEAD * s.long, behind = TOOL.BEHIND * s.long;
+    const gap = p.joint_gap > 0 ? p.joint_gap : TOOL.THICK * sm;
+    if (i) {
+      const got = cuts[i] - cuts[i - 1], want = info[i - 1].behind + ahead;
+      if (got < TOOL.SHATTER * s.long)
+        errors.push('joints at x=' + cuts[i - 1].toFixed(0) + ' and x=' +
+          cuts[i].toFixed(0) + ' are only ' + got.toFixed(1) + ' mm apart: ' +
+          'the two cuts would destroy each other\u2019s linkage');
+      else if (got < want)
+        notes.push('joints at x=' + cuts[i - 1].toFixed(0) + ' and x=' +
+          cuts[i].toFixed(0) + ': ' + got.toFixed(1) + ' mm apart, but they ' +
+          'reach ' + want.toFixed(1) + ' mm \u2014 that segment is all shroud');
+    }
+    if (gap < 0.3)
+      notes.push('joint x=' + cuts[i].toFixed(0) + ': only ' + gap.toFixed(2) +
+        ' mm of clearance \u2014 the section is small, so the joint is too');
+    info.push({ xa: cuts[i], sWide: s.wide, sLong: s.long, sTall: s.tall,
+                gap: gap, ahead: ahead, behind: behind });
+  }
+  return { notes: notes, errors: errors, info: info };
+}
+
+function layout(p, L, C) {
   const first = p.head_length, last = L - p.tail_root_len;
   const xd = p.len_nose_to_dorsal;
   const wd = p.dorsal_length + 2 * p.fin_margin;
-  const n = Math.round(p.n_segments);
-  const out = { cuts: [], errors: [], dorsalOnHead: false, trimLo: 0, trimHi: 0 };
+  let n = Math.round(p.n_segments);
+  const out = { cuts: [], errors: [], notes: [], dorsalOnHead: false,
+                trimLo: 0, trimHi: 0 };
   if (n < 1) { out.errors.push("n_segments must be >= 1"); return out; }
+  if (p.joint_style === 'tool') n = toolSegmentCap(first, last, n, C, out.notes);
   if (last - first < n * p.min_seg_len) {
     out.errors.push("body too short for " + n + " segments (max " +
       Math.floor((last - first) / p.min_seg_len) + " at these lengths)");
     return out;
   }
-  const lin = (a, b, m) => Array.from({ length: m }, (_, i) => a + (b - a) * i / (m - 1));
+  // m === 1 is np.linspace(a, b, 1) == [a]; without the guard the
+  // single-segment layouts divide by zero and every cut comes out NaN
+  const lin = (a, b, m) => m <= 1 ? [a]
+    : Array.from({ length: m }, (_, i) => a + (b - a) * i / (m - 1));
   if (xd - wd / 2 <= first + 0.5) {
     out.dorsalOnHead = true;
     out.cuts = lin(first, last, n + 1);
@@ -823,12 +954,15 @@ function prepare(overrides, showCuts) {
              sx: sr + 0.6, sz: 0.40 * (2 * rzh - p.belly_drop), sr,
              k: (4.0 + 9.0 * pt) * Math.min(hl / 34.0, 1.6) };
 
-  const lay = layout(p, L);
-  C.cuts = lay.cuts; C.errors = lay.errors.slice(); C.notes = [];
+  const lay = layout(p, L, C);
+  C.cuts = lay.cuts; C.errors = lay.errors.slice();
+  C.notes = (lay.notes || []).slice();
   C.trimLo = lay.trimLo; C.trimHi = lay.trimHi;
   if (!C.errors.length) {
-    const jn = jointNotes(p, C.cuts, C);
-    C.notes = jn.notes; C.errors = C.errors.concat(jn.errors);
+    const jn = p.joint_style === 'tool' ? toolJointNotes(p, C.cuts, C)
+                                        : jointNotes(p, C.cuts, C);
+    C.notes = C.notes.concat(jn.notes);
+    C.errors = C.errors.concat(jn.errors);
     C.joints = jn.info;
   }
 
@@ -1150,7 +1284,7 @@ const SLIDERS = [
   ['tail_height','Height',15,55,.5],
   ['tail_fork','Fork depth',0,15,.5]]]
 ];
-const params = {};
+const params = { joint_style: 'ball' };
 SLIDERS.forEach(([,rows]) => rows.forEach(([k]) => params[k] = FishCore.DEFAULTS[k]));
 
 // ---------- panel ----------
@@ -1176,10 +1310,33 @@ SLIDERS.forEach(([title, rows]) => {
     });
   });
 });
+// joint style: not drawn here either way, but it decides how many segments
+// fit, so the grooves move when it changes
+const jrow = document.createElement('div');
+jrow.className = 'row';
+const jlab = document.createElement('label');
+jlab.textContent = 'Linkage';
+const jseg = document.createElement('div');
+jseg.className = 'seg';
+[['ball', 'Ball'], ['tool', 'Rings']].forEach(([v, t]) => {
+  const btn = document.createElement('button');
+  btn.textContent = t;
+  btn.className = v === params.joint_style ? 'on' : '';
+  btn.addEventListener('click', () => {
+    params.joint_style = v;
+    [...jseg.children].forEach(c => c.classList.toggle('on', c === btn));
+    requestBuild(false);
+  });
+  jseg.appendChild(btn);
+});
+jrow.append(jlab, jseg); panel.appendChild(jrow);
+
 const foot = document.createElement('p');
 foot.style.cssText = 'color:#8fa0af;font-size:11.5px;margin-top:14px';
 foot.textContent = 'Grooves preview the segment cuts; side fins render welded ' +
-  'here but print as free ball joints via flexifish.py. More: --list-params';
+  'here but print as free ball joints via flexifish.py. Ring linkage needs ' +
+  'much longer segments, so the grooves thin out when you pick it. ' +
+  'More: --list-params';
 panel.appendChild(foot);
 
 // ---------- modes ----------

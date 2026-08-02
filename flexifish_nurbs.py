@@ -69,8 +69,8 @@ from dataclasses import dataclass, field, fields, replace, asdict
 
 import numpy as np
 
-from flexifish import (F32, FishBuilder, FishParams, fin_sheet, mesh,
-                       mesh_stats, render_png, sd_ellipsoid, sd_polygon,
+from flexifish import (F32, FishBuilder, FishParams, coupon_window, fin_sheet,
+                       mesh, mesh_stats, render_png, sd_ellipsoid, sd_polygon,
                        smax, smin, write_stl)
 
 
@@ -499,6 +499,12 @@ class NurbsFishBuilder(FishBuilder):
         d = smax(d, (X - S.b3).astype(F32), F32(2.0))     # ...and caudal root
         return d
 
+    def _fit_tool_segments(self, p):
+        """No-op here: n_segments is not an input to this fish -- the regions
+        and `regions.tail_segments` decide the cuts, so `_layout` does the
+        capping instead."""
+        return p
+
     # ---------------- region-driven segmentation ----------------------
     def _layout(self):
         p, S = self.p, self.shape
@@ -521,6 +527,11 @@ class NurbsFishBuilder(FishBuilder):
             need = max(need, g["att"][0] + rb + p.clearance + p.wall + 1.0)
         self.dorsal_on_head = (S.b1 < need
                                or S.b2 - S.b1 < p.min_seg_len)
+        # the ring joint is long; the tail region may not hold as many of them
+        # as it holds ball joints (the dorsal region's own pair is checked
+        # afterwards, per pair, in _size_tool_joints)
+        if p.joint_style == "tool":
+            nt = self._tool_segment_cap(S.b2, last, nt)
         if self.dorsal_on_head:
             if S.b2 < need:
                 raise SystemExit(
@@ -892,7 +903,7 @@ def main(argv=None):
         print(f"  {name:10s} {a:6.1f} -> {x1:6.1f} mm  {what}")
     jxs = ", ".join(f"{j['xa']:.0f}" for j in b.joints)
     print(f"fish: {b.bounds()[1] - b.bounds()[0]:.0f} mm long, "
-          f"{b.p.n_segments} segments, joints at x = {jxs}")
+          f"{b.p.n_segments} segments, {b.p.joint_style} joints at x = {jxs}")
 
     if args.svg:
         svg = args.out.replace(".stl", "") + "_curves.svg"
@@ -910,12 +921,15 @@ def main(argv=None):
               "orphaned. Inspect before printing.")
 
     if args.coupon:
-        mid = b.joints[len(b.joints) // 2]
-        cv, cf = mesh(b, res, sub=(mid["xa"] - 7.0, mid["xa"] + 7.5))
+        i = len(b.joints) // 2
+        lo, hi, isolated = coupon_window(b, i)
+        cv, cf = mesh(b, res, sub=(lo, hi))
         cp = args.out.replace(".stl", "") + "_joint_test.stl"
         write_stl(cp, cv, cf)
         cm, cs = mesh_stats(cv, cf)
-        print(f"{cp}: {len(cf)} tris, manifold={cm}, shells={cs} (expected 2)")
+        note = "" if isolated else "; neighbouring joints reach into this one"
+        print(f"{cp}: {len(cf)} tris, manifold={cm}, shells={cs} "
+              f"(expected 2{note})")
 
     if args.png:
         pv, pf = (verts, faces) if res >= 0.5 else mesh(b, 0.55)
