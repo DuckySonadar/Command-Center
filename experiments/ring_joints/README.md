@@ -230,6 +230,8 @@ gets any slimmer.
 | `sdf_json.py` | reads a scene from the repo's `sdf_editor.html` and evaluates it as an SDF, so the owner's own model can be measured directly instead of paraphrased |
 | `check_against_editor.py` | **proves `sdf_json.py` agrees with the editor** — lifts the editor's own `PRIMS` / `smin` / `invRot` / `sceneSDF` out of the HTML, runs them under node, and compares. Currently 1.9e-7 max error, 100% sign agreement over 4000 points |
 | `owner_joint.json` | the owner's two-segment reference joint, and the thing the generator is meant to reproduce |
+| `tool.json` | the owner's joint **tool**: one solid that, subtracted from a body, leaves two interlocking pieces |
+| `tool_cut.py` | applies that tool at each joint of the fish, scaled to the local section, and checks the result — pieces, linkage, gap, thinnest feature |
 | `describe_scene.py` | **what a scene is actually made of**: node order per body, how far the segments interleave, and how the seam cavity sits against the rings it passes through |
 | `flexifish_rings_WIP.py` | full `flexifish.py` with rings swapped in |
 | `flexifish_rings.diff` | that same work as a unified diff against this branch's `flexifish.py` |
@@ -245,6 +247,7 @@ python3 check_swing.py 1    # range of motion at the middle joint  (~11 s)
 python3 check_print.py 1    # islands at the middle joint  (~10 s)
 python3 check_against_editor.py          # reader vs the editor  (~2 s, needs node)
 python3 describe_scene.py                # structure of the reference joint  (~1 min)
+python3 tool_cut.py                      # subtract the tool at every joint  (~3 min)
 python3 flexifish_rings_WIP.py --out rings.stl --coupon   # ~3.5 min
 ```
 
@@ -337,9 +340,46 @@ wants.
 
 ---
 
-## Porting the reference joint: what has to change
+## Subtracting a tool, instead of building a seam
 
-`owner_joint.json` is the target. Three things about it are structural, not
+The approach above -- derive a seam cavity from the body -- is superseded.
+The owner's `tool.json` is a single solid that, cut out of a body, leaves two
+interlocking pieces. It works, and it scales, which the fitted cavity would
+not have.
+
+It is deliberately **larger than the body it cuts**: the tool is 54.5 x 47 x
+41.8 mm and overshoots the skin on every side. Only the interlock in the
+middle has to sit inside the material, so getting the outer dimensions right
+does not matter -- which is exactly why it survives being scaled.
+
+Measured over the default fish, tool scaled to each joint's own section
+(`tool_cut.py`, 0.35 mm voxels):
+
+| joint | section | scale | pieces | linked | gap | thinnest |
+|---|---|---|---|---|---|---|
+| 34 | 20.1 x 37.6 | 0.98 | 2 | yes | 1.26 mm | 10.4 mm |
+| 76 | 12.2 x 25.7 | 0.60 / 0.66 | 2 | yes | 0.99 mm | 10.8 mm |
+| 101 | 8.1 x 14.6 | 0.40 / 0.38 | 2 | yes | 0.70 mm | 11.9 mm |
+
+Two linked pieces at every joint, over a 2.5x range of scale, and it does not
+much care whether the along-body scale follows the height or stays at 1.0.
+
+Linkage is not assumed, it is tested: slide one piece along the body and watch
+the overlap. Pieces that merely nest come apart at once and never overlap;
+pieces that are linked have to pass through each other, so overlap goes
+positive over a middle range before they clear. Every joint shows the second
+signature.
+
+**The one thing that needs work: the gap scales with the tool.** 1.26 -> 0.99
+-> 0.70 mm as the tool shrinks, so a smaller joint than the tail one would
+close it up. The clearance should be held fixed rather than scaled -- dilate
+the tool by a constant after scaling it -- and `tool_cut.py` already measures
+the number that would prove it.
+
+## The seam-cavity approach this replaced
+
+Kept for the reasoning, not as a plan. `owner_joint.json` was the target, and
+three things about it are structural, not
 cosmetic, and each one breaks an assumption the generator is built on.
 
 **1. Node order is load-bearing.** Each segment is built in this sequence:

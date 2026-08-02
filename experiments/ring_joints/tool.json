@@ -1,0 +1,13 @@
+{"version":2,"bodies":[{"id":1,"name":"Body 2","on":true},{"id":2,"name":"Segment 1","on":true},{"id":3,"name":"Segment 1 copy","on":true}],
+"nodes":[
+{"t":"ellipsoid","on":true,"op":"add","k":2.75,"b":1,"tg":null,"p":[0,29,27],"r":[-42,0,0],"d":[54.5,45.5,82.5]},
+{"t":"ellipsoid","on":true,"op":"cut","k":5,"b":3,"tg":[1],"p":[0,47.5,29],"r":[-51,0,0],"d":[46,59,78.5]},
+{"t":"ellipsoid","on":true,"op":"cut","k":4.25,"b":1,"tg":[1],"p":[0,25,9],"r":[0,0,0],"d":[15.5,22,14]},
+{"t":"torus","on":true,"op":"add","k":1.5,"b":1,"tg":null,"p":[0,5,15.5],"r":[30,0,0],"d":[8,5.75,0]},
+{"t":"torus","on":true,"op":"cut","k":2,"b":3,"tg":[1],"p":[0,12,19],"r":[0,90,0],"d":[8,3,0]},
+{"t":"torus","on":true,"op":"cut","k":3.5,"b":2,"tg":null,"p":[0,4.5,15],"r":[30,0,0],"d":[8.5,2.75,0]},
+{"t":"ellipsoid","on":true,"op":"cut","k":1.5,"b":1,"tg":null,"p":[0,-6,11],"r":[-58,0,0],"d":[30,18,14]},
+{"t":"plane","on":true,"op":"cut","k":2,"b":0,"tg":null,"p":[0,0,8],"r":[0,0,0],"d":[0,0,0]},
+{"t":"plane","on":false,"op":"cut","k":0,"b":1,"tg":null,"p":[0,33,0],"r":[0,-90,0],"d":[0,0,0]},
+{"t":"capsule","on":false,"op":"cut","k":0,"b":1,"tg":null,"p":[0,21,8],"r":[-90,0,0],"d":[6,30,0]}
+]}
