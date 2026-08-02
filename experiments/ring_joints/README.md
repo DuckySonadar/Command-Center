@@ -370,6 +370,30 @@ pieces that are linked have to pass through each other, so overlap goes
 positive over a middle range before they clear. Every joint shows the second
 signature.
 
+### The belly plane is degenerate at level 0.0
+
+Worth knowing before trusting any shell count from this generator. The plate
+cut is `max(d, -Z)`, which is **exactly** zero wherever the body crosses
+z = 0. If the meshing grid puts a lattice plane there -- and the default
+`z0 = -1.2` with `res = 0.30` does, giving 3201 exact zeros -- then marching
+cubes at `level = 0.0` stitches across that sheet and welds together every
+part that touches the plate:
+
+```
+marching cubes at level  0.000:  6 shells
+                        -0.001:  8 shells   correct
+                        -0.010:  8 shells   correct
+                        +0.001:  5 shells
+```
+
+Nothing was wrong with the geometry: the field labels into 8 disjoint pieces
+under both 6- and 26-connectivity, so no grid cube can even contain material
+from two of them. `mesh()` now meshes a hair below zero, which removes the
+degeneracy and moves the surface by a thousandth of a millimetre.
+
+This is why the first tool-cut build came out at 6 shells and looked like a
+failure of the tool. It was not.
+
 **The one thing that needs work: the gap scales with the tool.** 1.26 -> 0.99
 -> 0.70 mm as the tool shrinks, so a smaller joint than the tail one would
 close it up. The clearance should be held fixed rather than scaled -- dilate

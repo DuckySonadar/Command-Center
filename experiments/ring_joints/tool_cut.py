@@ -104,10 +104,13 @@ def main(argv):
         xa = j["xa"]
         sx, sz = scale_for(b, xa)
         sy = sz
+        # the body's real extent, not a guess -- clipping y and z here once
+        # made this check pass on a truncated fish
+        _, _, by0, by1, bz0, bz1 = b.bounds()
         pad = 30 * max(sy, 1.0)
         xs = np.arange(xa - pad, xa + pad, res)
-        ys = np.arange(-26, 26, res)
-        zs = np.arange(0, 34, res)
+        ys = np.arange(by0, by1, res)
+        zs = np.arange(bz0, bz1, res)
         X, Y, Z = np.meshgrid(xs, ys, zs, indexing="ij")
         F = b.body_field(X.astype(ff.F32), Y.astype(ff.F32), Z.astype(ff.F32),
                          side_fins=False)

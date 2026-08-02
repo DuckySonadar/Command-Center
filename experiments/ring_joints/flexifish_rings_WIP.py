@@ -824,7 +824,14 @@ def mesh(builder, res, field="plate", box=None, side_fins=True):
     if box:
         vol = np.maximum(vol, sd_box(X, Y, Z, box[0], box[1], box[2], box[3],
                                      -5.0, box[5]))
-    verts, faces, _, _ = measure.marching_cubes(vol, level=0.0,
+    # Not level 0.0. The plate cut is `max(d, -Z)`, which is *exactly* zero
+    # wherever the body crosses z = 0, so if the grid puts a lattice plane
+    # there (z0 = -1.2 with res = 0.30 does) the belly becomes a sheet of
+    # exact zeros. Marching cubes then stitches across it and welds every
+    # part that touches the plate into one shell -- 8 shells became 6, with
+    # nothing wrong with the geometry at all. A hair below zero removes the
+    # degeneracy; it shifts the surface by a thousandth of a millimetre.
+    verts, faces, _, _ = measure.marching_cubes(vol, level=-1e-3,
                                                 spacing=(res, res, res))
     verts += np.array([xs[0], ys[0], zs[0]], dtype=np.float64)
     return verts, faces
