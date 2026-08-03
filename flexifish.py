@@ -74,7 +74,7 @@ class FishParams:
     #           per joint at full size, so far fewer segments fit. Sizing
     #           reduces n_segments rather than produce a fish that comes out
     #           in one piece.
-    joint_style: str = "ball"          # "ball" | "tool"
+    joint_style: str = "ball"          # "ball" | "tool" | "none"
     joint_gap: float = 0.0             # "tool": fixed clearance at every
                                        # joint; 0 keeps the tool's own, which
                                        # tapers with the body (~1.2 -> 0.6 mm)
@@ -257,9 +257,9 @@ class FishBuilder:
         self.p = p
         self.L = p.len_nose_to_dorsal + p.len_dorsal_to_tail  # nose -> caudal root
         self.warnings: list[str] = []
-        if p.joint_style not in ("ball", "tool"):
+        if p.joint_style not in ("ball", "tool", "none"):
             raise SystemExit(f"unknown joint_style {p.joint_style!r} "
-                             "(expected 'ball' or 'tool')")
+                             "(expected 'ball', 'tool' or 'none')")
         if p.joint_style == "tool":
             self.p = p = self._fit_tool_segments(p)
         self._layout()
@@ -309,6 +309,14 @@ class FishBuilder:
     # ---------------- segmentation layout ---------------------------
     def _layout(self):
         p = self.p
+        if p.joint_style == "none":
+            # a fish in one piece: no cuts, so no joints, and the dorsal fin
+            # is free to sit wherever it was drawn
+            self.cuts = np.array([], dtype=float)
+            self.dorsal_on_head = False
+            self.dorsal_trim = (-1e4, 1e4)
+            self.p = replace(p, n_segments=0)
+            return
         first, last = p.head_length, self.L - p.tail_root_len
         xd = p.len_nose_to_dorsal
         wd = p.dorsal_length + 2 * p.fin_margin
@@ -378,6 +386,9 @@ class FishBuilder:
         return min(self.p.wall, max(1.0, 0.45 * R))
 
     def _size_joints(self):
+        if self.p.joint_style == "none":
+            self.joints = []
+            return
         if self.p.joint_style == "tool":
             return self._size_tool_joints()
         p = self.p
@@ -738,7 +749,8 @@ class FishBuilder:
         fins = self._fins()
         for g in fins:
             F = np.maximum(F, -self.fin_cavity(g, X, Y, Z))
-        out = (self._split_tool(F, X, Y, Z) if self.p.joint_style == "tool"
+        out = (F if self.p.joint_style == "none"
+               else self._split_tool(F, X, Y, Z) if self.p.joint_style == "tool"
                else self._split_ball(F, X, Y, Z))
         for g in fins:
             for sgn in (1.0, -1.0):
@@ -978,7 +990,10 @@ def main(argv=None):
     verts, faces = mesh(b, res)
     write_stl(args.out, verts, faces)
     man, shells = mesh_stats(verts, faces)
-    expected = (p.n_segments + 2 + (2 if p.pec_length > 0.5 else 0)
+    # a segmented fish is head + n segments + tail root; an unsegmented one is
+    # a single body. The side fins are free either way.
+    body_pieces = 1 if p.joint_style == "none" else p.n_segments + 2
+    expected = (body_pieces + (2 if p.pec_length > 0.5 else 0)
                 + (2 if p.pelvic_length > 0.5 else 0))
     print(f"{args.out}: {len(faces)} tris, manifold={man}, "
           f"shells={shells} (expected {expected})  [{time.time()-t0:.0f}s]")

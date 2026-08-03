@@ -508,6 +508,14 @@ class NurbsFishBuilder(FishBuilder):
     # ---------------- region-driven segmentation ----------------------
     def _layout(self):
         p, S = self.p, self.shape
+        if p.joint_style == "none":
+            # one solid fish: the regions still shape the body, they just stop
+            # deciding where it is cut
+            self.cuts = np.array([], dtype=float)
+            self.dorsal_on_head = False
+            self.dorsal_trim = (-1e4, 1e4)
+            self.p = replace(p, n_segments=0)
+            return
         last = S.b3 - p.tail_root_len
         nt = S.tail_segments
         if nt < 1:
@@ -553,6 +561,18 @@ class NurbsFishBuilder(FishBuilder):
 
     def region_table(self):
         S, rows = self.shape, []
+        if self.p.joint_style == "none":
+            # the regions still shape the body; they just make no cuts
+            rows.append(("head", S.b0, S.b1, "one solid fish, no joints"))
+            for g in S.side_fins:
+                x0, x1 = g["poly"][:, 0].min(), g["poly"][:, 0].max()
+                rows.append((f"  {g['name']}", x0, x1,
+                             f"ball socket at x={g['att'][0]:.0f}"))
+            rows.append(("dorsal", S.b1, S.b2, "fin fused to the back"))
+            rows.append(("tail", S.b2, S.b3 - self.p.tail_root_len, "solid"))
+            x1 = S.caudal[:, 0].max() if S.caudal is not None else S.b3
+            rows.append(("caudal", S.b3 - self.p.tail_root_len, x1, "fan piece"))
+            return rows
         rows.append(("head", S.b0, S.b1 if not self.dorsal_on_head else S.b2,
                      "rigid" + ("" if not self.dorsal_on_head
                                 else ", dorsal fin on head")))
@@ -913,7 +933,9 @@ def main(argv=None):
     verts, faces = mesh(b, res)
     write_stl(args.out, verts, faces)
     man, shells = mesh_stats(verts, faces)
-    expected = b.p.n_segments + 2 + 2 * len(b.shape.side_fins)
+    # segmented: head + n segments + tail root. Unsegmented: one body.
+    body_pieces = 1 if b.p.joint_style == "none" else b.p.n_segments + 2
+    expected = body_pieces + 2 * len(b.shape.side_fins)
     print(f"{args.out}: {len(faces)} tris, manifold={man}, "
           f"shells={shells} (expected {expected})  [{time.time() - t0:.0f}s]")
     if shells != expected and not args.preview:
