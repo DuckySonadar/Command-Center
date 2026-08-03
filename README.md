@@ -25,12 +25,42 @@ terminal to stop it.
   `inventory-manifest.json` from the image filenames
   (`CODE-NNNN-Description-Designer.png`). Large previews, the
   `originals/` folder, and any non-matching files are skipped.
+- **Publish Tools** — copies the editors into the website repo (see
+  *Editors* below). It reports every tool, including the ones that were
+  already current, because the question worth answering is usually "is the
+  site stale?" rather than "copy it". Copying only writes the files into the
+  website folder — **Commit & Push** is what puts them on the site.
 - **Commit & Push** — for **both** repos (the website and this app, since
   it's a living app): `git add -A`, commit (your message or an
   auto-generated one), `git pull --rebase`, then `git push`. A repo with
   no changes is skipped; a repo with no remote is committed but not pushed.
   Output for each repo is shown in the console panel.
 - **Refresh git status** — shows `git status` for both repos.
+
+## Editors
+
+The single-file apps in this repo — MetaMeld and the two fish designers —
+are served by the console itself, so they are one click away instead of
+something to hunt for on disk:
+
+| tool | file | opens at | on the site |
+|---|---|---|---|
+| MetaMeld | `sdf_editor.html` | `/tools/metameld` | `sdf_editor.html` |
+| Fish Designer · NURBS | `fish_designer_nurbs.html` | `/tools/fish-nurbs` | `tools/fish-editor-nurbs.html` |
+| Fish Designer · blob | `fish_designer.html` | `/tools/fish-blob` | not published |
+
+Each one is read from disk on every request, so editing the file and
+reloading the tab is the whole workflow — no restart, no cache.
+
+**On a phone.** The console listens on `127.0.0.1` only, so nothing is
+reachable from the network by default. To open an editor on a phone on the
+same Wi-Fi, start it with `MAKERCAVE_HOST=0.0.0.0 python3 console.py` and
+use the address it prints. That saves running a second web server, but it
+also puts **Build Manifest** and **Commit & Push** on the network — so only
+do it on Wi-Fi you trust, and stop the app when you are done.
+
+To add another editor, add an entry to `TOOLS` in `console.py`; serving,
+the card, and publishing all follow from it.
 
 ## Repos
 
@@ -359,9 +389,11 @@ two fingers pan/zoom the drawing.
 The NURBS designer is also published on the website's **SDF EDITOR**
 section, as `tools/fish-editor-nurbs.html` in the
 `mywebsiterepository-Iknowtotallyoriginal` repo, alongside **MetaMeld**
-(`sdf_editor.html`). The blob designer is not published. Those are
-plain copies — this repo stays the source of truth, so edit here and
-re-copy after a change.
+(`sdf_editor.html`). The blob designer is not published. Those are plain
+copies and this repo stays the source of truth, so edit here and then hit
+**Publish Tools** in the console, followed by **Commit & Push**. That used
+to be a manual `cp` described only in prose here, and it got skipped — which
+is exactly why the button exists.
 
 ## MetaMeld (`sdf_editor.html`)
 
@@ -385,10 +417,13 @@ what the file is called.
 
 The file has to reach the phone somehow; the two easy routes are:
 
-- **Over the local network.** From the repo folder run
-  `python3 -m http.server 8000`, then on the phone (same Wi-Fi) open
-  `http://<your-mac's-IP>:8000/sdf_editor.html`. The IP is in System
-  Settings → Wi-Fi → Details.
+- **Over the local network.** Start the console with
+  `MAKERCAVE_HOST=0.0.0.0 python3 console.py` and open the address it
+  prints, then `/tools/metameld`. Read the warning under *Editors* first —
+  that setting also puts the maintenance buttons on the network. (The
+  older route still works if you would rather not: `python3 -m http.server
+  8000` from this folder, then `http://<your-mac's-IP>:8000/sdf_editor.html`.
+  The IP is in System Settings → Wi-Fi → Details.)
 - **AirDrop the file** to the phone and open it from Files. Safari runs it
   straight off local storage.
 
@@ -403,9 +438,11 @@ picked up once and re-saved under the new one, so nothing is lost.)
 ### Putting it on the website
 
 It's one file with no external references, so it needs no build step and no
-server logic: copy `sdf_editor.html` into the website repo and it is live at
+server logic: **Publish Tools** copies `sdf_editor.html` into the website
+repo and **Commit & Push** makes it live at
 `josiahsmakercave.xyz/sdf_editor.html`. Any path works — nothing in the file
-is path-relative. The top bar carries a **‹ Maker Cave** link home.
+is path-relative — so if you move it, change `publish` in `TOOLS`
+(`console.py`) to match. The top bar carries a **‹ Maker Cave** link home.
 
 The page is deliberately full-screen (fixed viewport, no page scroll) —
 that's what makes it usable on a phone — so it wants to be its own page
