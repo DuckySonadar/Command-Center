@@ -326,264 +326,37 @@ A full-res build reports `shells=` and `manifold=`; the expected shell
 count is printed next to it, and a mismatch means fused or orphaned
 parts — inspect before printing.
 
-## Fish designers in the browser (`fish_designer.html`, `fish_designer_nurbs.html`)
+## Fish designer in the browser (`fish_designer.html`)
 
-Two self-contained web apps (no server, no dependencies — just open the
-file in a browser). Both show a live 3D preview with segment-cut
-grooves (display only — the grooves and welded side fins never touch
-the printable geometry) and run the same layout/joint validation as
-the Python tools.
+A self-contained web app (no server, no dependencies — just open the file
+in a browser) driving the original blob fish: sliders only, exporting a
+`--config` JSON for `flexifish.py`. It shows a live 3D preview with
+segment-cut grooves (display only — the grooves and welded side fins never
+touch the printable geometry) and runs the same layout and joint
+validation the Python tools do, including the ring-linkage sizing rule.
+On a phone the panel docks to the bottom half.
 
-- **`fish_designer.html`** drives the original blob fish: sliders only,
-  exports a `--config` JSON for `flexifish.py`.
-- **`fish_designer_nurbs.html`** drives the NURBS fish and adds the
-  drawing interface: **Draw side** and **Draw top** modes show the
-  curves with draggable control points (tap a point, drag it; ＋/−
-  point buttons edit the active curve; × on a fin chip removes that
-  fin). Region bands (head / dorsal / tail / caudal) and joint cut
-  lines update live as you draw, the region sliders sit in the right
-  panel (including the mouth-shape dropdown), and **Shape JSON**
-  exports a file for `flexifish_nurbs.py --shape`. **Save STL** builds
-  the real printable plate in the browser — segmented body, joint pins
-  and cavities, ball-socket fin parts — at the same 0.3 mm resolution
-  the Python tool prints at (expect a few seconds; its surface-nets
-  mesher can leave a handful of non-manifold edges that slicers repair
-  automatically, so the Python build stays the pristine path). The JS
-  is a numerically faithful port of the Python pipeline (same curves,
-  same regions, same joint sizing, same plate), so what you draw is
-  what prints.
+## The editors that moved to the website repo
 
-On a phone the panel docks to the bottom half; one finger drags points,
-two fingers pan/zoom the drawing.
+**MetaMeld** (the general SDF modeller) and the **NURBS fish designer**
+now live in `mywebsiterepository-Iknowtotallyoriginal`, as
+`tools/sdf-editor.html` and `tools/fish-editor-nurbs.html`. That repo is
+their source of truth: edit them there, and their documentation is in its
+README. They used to be kept here and copied across, which went wrong in
+both directions — the site ran a stale NURBS designer for a while, and a
+patch the site needed had to be re-applied by hand after every copy.
 
-The NURBS designer is also published on the website's **SDF EDITOR**
-section, as `tools/fish-editor-nurbs.html` in the
-`mywebsiterepository-Iknowtotallyoriginal` repo, alongside **MetaMeld**
-(`sdf_editor.html`). The blob designer is not published. Those are
-plain copies — this repo stays the source of truth, so edit here and
-re-copy after a change.
+Two things still cross the boundary, and neither is a file:
 
-## MetaMeld (`sdf_editor.html`)
+- The NURBS designer's **Shape JSON** is written for
+  `flexifish_nurbs.py --shape`, and its **Config JSON** for
+  `flexifish.py --config`. Changing those shapes on either side breaks
+  the other, so treat them as a contract.
+- `joint_tool.py` holds the ring-linkage solid that the NURBS designer
+  ports to JS. The port is checked against `joint_tool.raw` to 3e-14; if
+  the solid changes here, that check is what should catch the drift.
 
-A self-contained modelling app for phones — one file, no server, no
-dependencies. You build a shape out of signed-distance primitives and it
-raymarches the result live on the GPU, then meshes the *same* field on the
-CPU to give you a printable binary STL. Units are millimeters, +Z is up and
-z = 0 is the build plate, same conventions as the flexi fish tools.
-
-It opens on a single-scoop ice cream cone: a cone tipped point-down with its
-apex under the plate, so the build-plate cut leaves a flat to stand on, and a
-scoop dropped into the rim and blended in. Three shapes, and between them
-they demonstrate most of what the tool does. **Starters** has the rest
-(Blob, Vase, Keytag, Bracket) and will replace whatever is on screen.
-
-The filename stays `sdf_editor.html` — it is the URL already live on the
-site and already saved to a Home Screen, and nothing in the app depends on
-what the file is called.
-
-### Opening it on an iPhone
-
-The file has to reach the phone somehow; the two easy routes are:
-
-- **Over the local network.** From the repo folder run
-  `python3 -m http.server 8000`, then on the phone (same Wi-Fi) open
-  `http://<your-mac's-IP>:8000/sdf_editor.html`. The IP is in System
-  Settings → Wi-Fi → Details.
-- **AirDrop the file** to the phone and open it from Files. Safari runs it
-  straight off local storage.
-
-Either way, use **Share → Add to Home Screen** once. The shortcut is
-labelled *MetaMeld* and launches full-screen with no browser chrome, which
-is the difference between a web page and something that feels like an app.
-Everything runs on the phone — there is no server to keep alive, and the
-model is kept in local storage, so closing the tab doesn't lose it. (The
-storage key was renamed with the app; a model saved under the old key is
-picked up once and re-saved under the new one, so nothing is lost.)
-
-### Putting it on the website
-
-It's one file with no external references, so it needs no build step and no
-server logic: copy `sdf_editor.html` into the website repo and it is live at
-`josiahsmakercave.xyz/sdf_editor.html`. Any path works — nothing in the file
-is path-relative. The top bar carries a **‹ Maker Cave** link home.
-
-The page is deliberately full-screen (fixed viewport, no page scroll) —
-that's what makes it usable on a phone — so it wants to be its own page
-rather than sitting inside the site's normal header/footer layout.
-
-### Modelling
-
-A model is an ordered list of shapes, each applied to what came before:
-
-- **Add** fuses the shape in, **Cut** removes it, **Keep** intersects.
-- **Blend** rounds the join with a smooth min instead of a hard crease —
-  0 mm is a sharp edge, a few mm is a fillet. It applies to all three
-  operations, so you get soft cuts too.
-- **Mirror X/Y/Z** repeats the shape across that plane, which is how you
-  place symmetric features (bolt holes, fins) once instead of twice.
-- Primitives: sphere, box, cylinder, capsule, torus, cone (separate base
-  and top radii — set the top to 0 for a point), ellipsoid, and a
-  **plane cut**. An unrotated plane cut at z = 0 keeps everything above
-  the plate, which is the flat-bottom trick every print-in-place part
-  wants. The readout warns when the model reaches below the plate.
-
-Order matters: a Cut only removes what is already there, so shapes added
-after it are untouched — use ▲▼ to move a shape up or down the list.
-
-### Bodies
-
-A body is one buildable part. The **Bodies** list sits above Shapes and is
-where you work with them:
-
-- **Tap a body** to select it — every shape it is made of — and to make it
-  the active one. New shapes are built into it, and shapes belonging to
-  anything else dim in the Shapes list, so you can see at a glance what you
-  are working on. Selecting a shape moves you into its body, so the two
-  lists stay in step.
-- **● / ○** hides a body. It leaves the viewport, the size readout and the
-  STL — the way to see inside an assembly, or to print one part of it.
-- **✎** renames it. Names are worth setting: they are what the cut targets
-  are labelled with.
-- **✕** deletes the body and the shapes that build it. Undo brings it back.
-- **＋ Body** starts an empty one and makes it active, so you can make the
-  part first and then build into it.
-
-A shape's own body is also on its **Body** row in the inspector, and every
-Cut or Keep has an **Applies to** row naming the bodies it reaches. The
-default is *All bodies*, so a model that never touches any of this behaves
-exactly as it did before bodies existed.
-
-Two things follow from a shape living in a body:
-
-- **Blend stops at the boundary.** Two shapes in the same body with a few
-  mm of blend fuse into one filleted lump; the same two shapes in
-  different bodies meet in a hard crease instead. Nothing smooths across
-  a body line.
-- **A cut only reaches what it names.** Point a pocket at Body 1 and
-  Body 2 keeps its shape, even where the cutting shape passes straight
-  through it. That is the whole reason bodies exist — a captive part
-  needs its socket carved out of its neighbour and *not* out of itself.
-
-*All bodies* also covers bodies made later, which is what the build-plate
-plane cut wants: make it once and every part you add afterwards gets its
-flat bottom for free.
-
-Deleting a body leaves any cut that named only it pointing at nothing, and
-that cut goes inert — shown as `none` in the shape list rather than quietly
-widening to everything it was never aimed at.
-
-The badges in the shape list only appear once a model has two bodies, so
-single-part models stay as uncluttered as they were.
-
-**This is not a clearance.** Two bodies that overlap in space still union
-into one solid — separate bodies stop the *field* from interacting, not
-the geometry. Print-in-place parts still need a real gap between them
-(`flexifish_nurbs.py` uses 0.55 mm), and that gap has to survive meshing:
-below roughly two voxels of the STL resolution it closes up and the parts
-come out welded.
-
-**Orbit** mode: one finger orbits, two fingers pinch and pan. **Move**
-mode: one finger slides the selection across the screen plane, two fingers
-raise and lower it. ⤢ frames the model in whatever strip of screen the
-sheet leaves visible. Drag or tap the grip to resize the sheet.
-
-### Selecting
-
-Selected shapes turn **blue** in the viewport, and because shapes blend
-into each other the blue is mixed with the same weight the distance is —
-so where a selected shape melts into an unselected one, the colour fades
-across the blend instead of stopping at a hard line. It shows you exactly
-how far a shape's influence reaches, which is otherwise guesswork.
-
-The button row above the shape list decides what a tap does:
-
-- **Single** — the tapped shape becomes the selection.
-- **Sticky** — tapping adds a shape, and tapping it again takes it back
-  out. That is the whole deselect story; the selection can be emptied
-  completely, and the inspector then says so rather than pretending
-  something is selected.
-
-To select a **body**, tap it in the Bodies list. That takes everything the
-body is made of — its own shapes *and* every cut or keep that reaches
-them, the same set the model is folded from. In Sticky mode it adds the
-body to what you already have, so bodies and loose shapes gather together.
-
-**Move** drags everything selected at once, and **Delete** removes all of
-it. With more than one shape selected the **Place** sliders drive the
-whole selection as one rigid piece: Position translates all of it, and
-Rotate turns it about the selection's centre — each shape orbits that
-centre and takes its own orientation with it. The size, blend and corner
-rows stay on a single shape, since there is no sensible way to resize a
-mixed bag of primitives together; that shape is the last one you tapped,
-marked in the list with a bar down its edge and named in the inspector
-heading as *Editing 1 of N selected*.
-
-The turn is a real rotation, not the same angle added to every shape.
-Adding angles happens to work about Z and quietly shears a group apart
-about X and Y, because the angles are stored as a Rz·Ry·Rx triple; the
-group rotation composes a proper world-axis matrix onto each shape and
-reads the triple back out, so distances inside the selection hold to
-floating-point precision.
-
-**Duplicate** copies one shape into the body it already belongs to. Select
-a whole body first, though, and it copies the lot into a **new** body —
-dropping the copies into the source body would only bury them inside the
-shapes they came from. The copy is offset 10 mm in x and named after its
-source (*Body 1 copy*).
-
-Two details it gets right, both of which are easy to get wrong by hand.
-A cut that named only the body being copied comes along, repointed at the
-copy, so the new part is carved the same way; a cut that was already
-global reaches the copy anyway and is left alone rather than doubled up.
-And the copies are slotted in directly after the source body's last shape
-rather than appended — a cut only reaches what is above it, so appending
-would drop them below the build-plate cut and leave the copy with no flat
-bottom.
-
-### Getting it out
-
-**Save STL** sweeps the real field on a grid (the resolution slider, 0.5 mm
-by default) and runs the same surface-nets mesher the Python tools use.
-It's evaluated a slice at a time between frames, so the phone stays
-responsive and iOS never offers to kill the tab. On iOS the finished file
-goes to the share sheet — Files, AirDrop, or straight into a slicer app.
-Since the build spans several frames iOS has forgotten the tap by the time
-it finishes and may refuse the share; the STL is kept, so tapping **Save
-STL** again hands it over instantly.
-
-Grids are capped at 14 M voxels on a touch device and 40 M elsewhere; the
-readout shows the grid size before you commit. **JSON** copies the model
-out as text (or pastes one back in) — the portable backup, since local
-storage is per-browser.
-
-### Why the picture and the STL can disagree
-
-They find the surface in different ways, and the difference used to be
-visible: the exported part looked slightly eroded next to the viewport.
-
-The mesher is the accurate one. It interpolates the zero crossing exactly,
-and its error falls off with the square of the resolution — a 40.000 mm
-sphere comes out 39.987 mm at the default 0.5 mm and 39.997 mm at 0.25 mm.
-Nothing to worry about on a print.
-
-The *viewer* was the one telling fibs. Raymarching stops as soon as a ray
-gets close to the surface rather than on it, so whatever that tolerance is,
-the picture is drawn that far proud of the real surface — and because the
-tolerance scales with how far the ray has travelled, the model quietly
-fattened as you zoomed out. At arm's length it was about 0.2 mm on every
-face, and worse across blends and on the ellipsoid, where the field is a
-bound rather than a true distance and a given field value means more
-millimetres than it says.
-
-The tolerance is now loose only while a finger is down, and tightens as
-soon as the view settles — the same trick the render resolution already
-used. A settled picture sits about 0.04 mm proud, which is well under a
-layer. Dragging is unchanged, and so is the cost of it.
-
-If the number is what matters, though, neither of these is the place to
-read it: **the STL is the truth**, and the Size readout is the loosest of
-the three (it probes a coarse grid and bisects, and reads about 0.2 mm
-under on the ice cream cone).
+The blob designer above is unpublished and stays here.
 
 ## Adding a new utility later
 
