@@ -75,8 +75,11 @@ def node_field(n, X, Y, Z):
     if n["t"] == "ellipsoid":
         return ellipsoid(p, n["d"])
     if n["t"] == "plane":
-        # SDF of the region the cut removes: everything below the plane
-        return (Z - n["p"][2]).astype(F32)
+        # SDF of the region the cut removes: everything below the plane.
+        # The editor evaluates this on the *rotated* point, so a tilted plane
+        # tilts; reading world Z flattened every rotated plane into a
+        # horizontal one at z = p[2].
+        return p[2].astype(F32)
     raise ValueError(n["t"])
 
 

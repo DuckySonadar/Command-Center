@@ -23,7 +23,15 @@ import sdf_json
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.normpath(os.path.join(HERE, os.pardir, os.pardir))
-EDITOR = os.path.join(REPO, "sdf_editor.html")
+# The editor moved to the website repo (tools/sdf-editor.html); it is a sibling
+# checkout in the normal layout. MAKERCAVE_REPO overrides, same env var the
+# console uses. Kept as a list so an old checkout still resolves.
+SITE = os.environ.get("MAKERCAVE_REPO",
+                      os.path.join(REPO, os.pardir,
+                                   "mywebsiterepository-Iknowtotallyoriginal"))
+EDITOR_PATHS = [os.path.normpath(os.path.join(SITE, "tools", "sdf-editor.html")),
+                os.path.join(REPO, "sdf_editor.html")]
+EDITOR = EDITOR_PATHS[0]
 PROBE = os.path.join(HERE, "editor_probe.js")
 TOL = 1e-5
 
@@ -31,13 +39,16 @@ TOL = 1e-5
 def editor_source():
     """The editor lives on main; this branch forked before it landed. Prefer
     the working tree, fall back to git so the check is runnable from here."""
-    if os.path.exists(EDITOR):
-        return open(EDITOR).read(), EDITOR
-    for ref in ("origin/main", "main"):
-        r = subprocess.run(["git", "-C", REPO, "show", f"{ref}:sdf_editor.html"],
+    for path in EDITOR_PATHS:
+        if os.path.exists(path):
+            return open(path).read(), path
+    for repo, ref, rel in ((SITE, "origin/main", "tools/sdf-editor.html"),
+                           (REPO, "origin/main", "sdf_editor.html"),
+                           (REPO, "main", "sdf_editor.html")):
+        r = subprocess.run(["git", "-C", repo, "show", f"{ref}:{rel}"],
                            capture_output=True, text=True)
         if r.returncode == 0:
-            return r.stdout, f"{ref}:sdf_editor.html"
+            return r.stdout, f"{repo}:{ref}:{rel}"
     return None, None
 
 

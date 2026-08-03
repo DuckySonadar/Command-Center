@@ -138,7 +138,10 @@ def _node(kind, p, r, d, X, Y, Z):
         k1 = np.sqrt((x / a ** 2) ** 2 + (y / b ** 2) ** 2 + (z / c ** 2) ** 2)
         return k0 * (k0 - 1.0) / np.maximum(k1, 1e-9)
     if kind == "plane":                        # the region the cut removes
-        return Z - p[2]
+        # the editor evaluates pPlane on the *rotated* point (`q.z`), so a
+        # tilted plane tilts. Reading world Z here silently flattened every
+        # rotated plane into a horizontal one at z = p[2].
+        return z
     raise ValueError(kind)
 
 
