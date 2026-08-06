@@ -355,6 +355,22 @@ Two things still cross the boundary, and neither is a file:
 - `joint_tool.py` holds the ring-linkage solid that the NURBS designer
   ports to JS. The port is checked against `joint_tool.raw` to 3e-14; if
   the solid changes here, that check is what should catch the drift.
+- The same file writes the cutter back out as a MetaMeld scene, so it can
+  be dropped into the editor and moved around by hand next to a baked
+  fish:
+
+  ```
+  python3 joint_tool.py --at 62.5 --out cutter.json [--scale 0.8] --check
+  ```
+
+  `--at` is the joint's position along the fish and `--scale` a uniform
+  size (`scales_for`'s is per-axis, which no list of primitives can say —
+  export at 1 and scale it in the editor if you want that freedom).
+  `--check` re-reads the file through `sdf_json.py` and holds it to
+  `tool_sdf`; it agrees to 3e-6 mm, and
+  `experiments/ring_joints/check_against_editor.py cutter.json` closes
+  the last link by running the editor's own evaluator over it. Regenerate
+  it whenever the solid changes rather than keeping a copy around.
 
 The blob designer above is unpublished and stays here.
 
