@@ -13,9 +13,8 @@ curves in two views and the generator derives everything else from them:
       caudal_fin  closed outline of the tail fan (draw the fork right in)
 
   top view (x = nose->tail, y = half-width, right side only -- mirrored)
-      plan          open curve, nose tip -> caudal root, the half-width
-      pectoral_fin  closed outline of the front paddle, drawn in place
-      pelvic_fin    closed outline of the rear paddle, drawn in place
+      plan        open curve, nose tip -> caudal root, the half-width
+      pelvic_fin  closed outline of the side paddle, drawn in place
 
 Named regions are derived from what you drew, not typed in:
 
@@ -28,11 +27,12 @@ Named regions are derived from what you drew, not typed in:
 
   * everything ahead of the dorsal fin outline is the HEAD region; it
     stays rigid and carries the eyes and the mouth
-  * the lower head region holds the PECTORAL and PELVIC fin regions --
-    both outlines must attach there (validated), because their ball
-    sockets must not straddle a joint cut
   * the dorsal fin outline claims the DORSAL region: exactly one
     articulated segment with the fin centered in it
+  * the PELVIC pair rides that same segment -- draw the outline under
+    the dorsal fin. A ball socket is a hollow, so a joint cut through
+    one prints it in halves and the fin falls out; that is validated,
+    not left to the shell count
   * the TAIL region is the only one with a variable segment count
     (regions.tail_segments)
 
@@ -43,8 +43,7 @@ The slider concept stays: per-region sliders scale the drawn curves
   sliders.dorsal  .length .width .height .fin_height
   sliders.tail    .length .width .height
   sliders.caudal  .length .height .thickness
-  sliders.pectoral.length .width          (about the attachment point)
-  sliders.pelvic  .length .width
+  sliders.pelvic  .length .width          (about the attachment point)
 
 Quick start:
     python flexifish_nurbs.py                        # default fish
@@ -70,8 +69,8 @@ from dataclasses import dataclass, field, fields, replace, asdict
 import numpy as np
 
 from flexifish import (F32, FishBuilder, FishParams, coupon_window, fin_sheet,
-                       mesh, mesh_stats, render_png, sd_ellipsoid, sd_polygon,
-                       smax, smin, write_stl)
+                       load_overrides, mesh, mesh_stats, render_png,
+                       sd_ellipsoid, sd_polygon, smax, smin, write_stl)
 
 
 # ======================================================================
@@ -139,12 +138,13 @@ DEFAULT_SHAPE = {
                                   [150, 33], [148, 26], [137, 19.5], [137, 18.5],
                                   [148, 11], [149, 2], [138, -2], [120, -2],
                                   [107, 0]]},
-        "pectoral_fin": {"closed": True,
-                         "points": [[16, 13], [21, 16], [28, 22], [32, 26],
-                                    [29, 28], [22, 26], [16, 20], [13, 15]]},
+        # drawn under the dorsal fin: its ball socket has to live inside one
+        # rigid segment, and the dorsal segment is the one this fish is built
+        # around (see NurbsFishBuilder._layout)
         "pelvic_fin": {"closed": True,
-                       "points": [[34, 12], [39, 14], [45, 18], [49, 22],
-                                  [46, 24], [40, 23], [34, 17], [31, 13]]},
+                       "points": [[55.5, 10.5], [60.5, 12.5], [66.5, 16.5],
+                                  [70.5, 20.5], [67.5, 22.5], [61.5, 21.5],
+                                  [55.5, 15.5], [52.5, 11.5]]},
         "mouth": {"points": [[1.0, 14.0], [0.6, 11.0], [2.0, 8.5],
                              [5.5, 7.0]]},
     },
@@ -155,7 +155,6 @@ DEFAULT_SHAPE = {
         "dorsal": {"length": 1.0, "width": 1.0, "height": 1.0, "fin_height": 1.0},
         "tail": {"length": 1.0, "width": 1.0, "height": 1.0},
         "caudal": {"length": 1.0, "height": 1.0, "thickness": 1.0},
-        "pectoral": {"length": 1.0, "width": 1.0},
         "pelvic": {"length": 1.0, "width": 1.0},
     },
 }
@@ -279,6 +278,9 @@ def resolve_shape(spec: dict, p: FishParams) -> ResolvedShape:
     for req in ("back", "plan"):
         if req not in curves:
             raise SystemExit(f"shape needs a '{req}' curve")
+    if "pectoral_fin" in curves:
+        print("note: this shape has a pectoral_fin outline. That pair was "
+              "removed -- the curve is ignored.")
 
     back = sample_curve(curves["back"], 300)
     plan = sample_curve(curves["plan"], 300)
@@ -322,8 +324,7 @@ def resolve_shape(spec: dict, p: FishParams) -> ResolvedShape:
     # side fins: find where each outline attaches BEFORE any remap, so
     # the paddle translates rigidly instead of stretching with the head
     side_specs = []
-    for name, thick in (("pectoral_fin", p.pec_thickness),
-                        ("pelvic_fin", p.pelvic_thickness)):
+    for name, thick in (("pelvic_fin", p.pelvic_thickness),):
         if name not in curves:
             continue
         pts = sample_curve(curves[name], 56)
@@ -416,7 +417,7 @@ def resolve_shape(spec: dict, p: FishParams) -> ResolvedShape:
     elif S.mouth["shape"] == "curve":
         S.mouth["shape"] = "groove"            # no curve drawn: plain plane
 
-    # ---- pectoral / pelvic paddles ------------------------------------
+    # ---- the side paddles ---------------------------------------------
     for name, pts, att, thick in side_specs:
         region = name.split("_")[0]
         dx_att = float(remap_x(att[0]) - att[0])
@@ -526,14 +527,13 @@ class NurbsFishBuilder(FishBuilder):
                 f"{last - S.b2:.1f} mm, max segments = "
                 f"{max(int((last - S.b2) // p.min_seg_len), 0)}")
 
-        # the head must keep the side-fin ball sockets clear of the first
-        # joint; if the dorsal fin is drawn that far forward, the dorsal
-        # region fuses into the rigid head (same rule as the blob fish)
-        need = S.b0 + 12.0
-        for g in self.shape.side_fins:
-            rb = min(max(0.42 * g["chord"], 3.0), 5.0)
-            need = max(need, g["att"][0] + rb + p.clearance + p.wall + 1.0)
-        self.dorsal_on_head = (S.b1 < need
+        # A head shorter than this has nowhere to put the eyes and the mouth,
+        # and a dorsal region too short to be a segment fuses into it. The
+        # side fins used to have a say here too -- drawn on the head, their
+        # sockets pushed the first cut back until they fitted ahead of it,
+        # which cost a segment. They ride the dorsal segment now, so where the
+        # first cut falls is the dorsal fin's business alone.
+        self.dorsal_on_head = (S.b1 < S.b0 + 12.0
                                or S.b2 - S.b1 < p.min_seg_len)
         # the ring joint is long; the tail region may not hold as many of them
         # as it holds ball joints (the dorsal region's own pair is checked
@@ -541,11 +541,6 @@ class NurbsFishBuilder(FishBuilder):
         if p.joint_style == "tool":
             nt = self._tool_segment_cap(S.b2, last, nt)
         if self.dorsal_on_head:
-            if S.b2 < need:
-                raise SystemExit(
-                    "pectoral/pelvic fins attach behind the first joint "
-                    f"cut (x={S.b2:.1f}); draw them further forward in "
-                    "the head region")
             cuts = list(np.linspace(S.b2, last, nt + 1))
             self.dorsal_trim = (2.0, S.b2 - p.face_gap / 2 - 1.0)
         else:
@@ -561,14 +556,20 @@ class NurbsFishBuilder(FishBuilder):
 
     def region_table(self):
         S, rows = self.shape, []
-        if self.p.joint_style == "none":
-            # the regions still shape the body; they just make no cuts
-            rows.append(("head", S.b0, S.b1, "one solid fish, no joints"))
+
+        def fins():
+            # listed under the region that carries them, which is the dorsal
+            # segment -- or the head, when the dorsal fin fused into it
             for g in S.side_fins:
                 x0, x1 = g["poly"][:, 0].min(), g["poly"][:, 0].max()
                 rows.append((f"  {g['name']}", x0, x1,
                              f"ball socket at x={g['att'][0]:.0f}"))
+
+        if self.p.joint_style == "none":
+            # the regions still shape the body; they just make no cuts
+            rows.append(("head", S.b0, S.b1, "one solid fish, no joints"))
             rows.append(("dorsal", S.b1, S.b2, "fin fused to the back"))
+            fins()
             rows.append(("tail", S.b2, S.b3 - self.p.tail_root_len, "solid"))
             x1 = S.caudal[:, 0].max() if S.caudal is not None else S.b3
             rows.append(("caudal", S.b3 - self.p.tail_root_len, x1, "fan piece"))
@@ -576,12 +577,9 @@ class NurbsFishBuilder(FishBuilder):
         rows.append(("head", S.b0, S.b1 if not self.dorsal_on_head else S.b2,
                      "rigid" + ("" if not self.dorsal_on_head
                                 else ", dorsal fin on head")))
-        for g in S.side_fins:
-            x0, x1 = g["poly"][:, 0].min(), g["poly"][:, 0].max()
-            rows.append((f"  {g['name']}", x0, x1,
-                         f"ball socket at x={g['att'][0]:.0f}"))
         if not self.dorsal_on_head:
             rows.append(("dorsal", S.b1, S.b2, "1 segment, fin centered"))
+        fins()
         n = self.shape.tail_segments
         last = S.b3 - self.p.tail_root_len
         rows.append(("tail", S.b2, last,
@@ -648,7 +646,7 @@ class NurbsFishBuilder(FishBuilder):
             zc = max(0.62 * rb, float(np.sqrt(2 * rb * p.clearance)) + 0.45)
             xb = float(g["att"][0])
             cy = self.halfwidth_at(xb, zc) - 0.2 * rb
-            out.append(dict(cx=xb, cy=cy, cz=zc, rb=rb,
+            out.append(dict(name=g["name"], cx=xb, cy=cy, cz=zc, rb=rb,
                             dx=float(g["dirv"][0]), dy=float(g["dirv"][1]),
                             span=g["span"], chord=g["chord"], th=g["thick"],
                             rn=0.45 * rb, boss_r=rb + p.clearance + p.wall,
@@ -686,7 +684,14 @@ class NurbsFishBuilder(FishBuilder):
         rball = np.sqrt((X - g["cx"]) ** 2 + (Y - cy) ** 2
                         + (Z - g["cz"]) ** 2)
         pad = smax(pad, ((g["boss_r"] + 0.7) - rball).astype(F32), F32(1.5))
-        f = smin(smin(ball, neck, F32(1.5)), pad, F32(2.0))
+        # 1.0, not the 1.5 this used to be: the fillet where the neck
+        # leaves the ball grows material *outward*, into the very clearance
+        # the joint needs to turn. At 1.5 the ball-to-socket gap measured
+        # 0.43 mm against a nominal 0.55, which is under two voxels at the
+        # 0.3 mm print resolution -- meshers bridged it and the fin came out
+        # welded to the body. At 1.0 the gap is 0.52 and the tightest place
+        # is no longer the ball.
+        f = smin(smin(ball, neck, F32(1.0)), pad, F32(2.0))
         return np.maximum(f, (-Z).astype(F32))
 
     # ---------------- face: eyes/lips/mouth ----------------------------
@@ -784,7 +789,7 @@ def write_svg(path, builder: NurbsFishBuilder, spec: dict):
             poly(np.column_stack([pts[:, 0], -pts[:, 1]]), sy, "fin mirror",
                  True)
     for name, cur in merged.get("curves", {}).items():
-        view = ("top" if name in ("plan", "pectoral_fin", "pelvic_fin")
+        view = ("top" if name in ("plan", "pelvic_fin")
                 else "side")
         fy = sz if view == "side" else sy
         cps = np.asarray(cur["points"], dtype=float)
@@ -902,11 +907,7 @@ def main(argv=None):
 
     p = FishParams()
     if args.config:
-        overrides = json.load(open(args.config))
-        unknown = set(overrides) - {f.name for f in fields(FishParams)}
-        if unknown:
-            sys.exit(f"unknown parameter(s): {sorted(unknown)}")
-        p = replace(p, **overrides)
+        p = replace(p, **load_overrides(args.config))
     if args.res:
         p = replace(p, res=args.res)
     res = 0.62 if args.preview and not args.res else p.res

@@ -32,6 +32,11 @@ here rather than loaded so that flexifish.py stays a single-file generator with
 no data files beside it. `experiments/ring_joints/check_against_editor.py`
 holds the maths below to the editor's own `sceneSDF` -- currently agreeing to
 1.9e-7 mm -- so do not change it without re-running that.
+
+Run as a script, it goes the other way and writes the solid back out as a
+MetaMeld scene, placed where a joint would sit:
+
+    python3 joint_tool.py --at 62.5 --scale 0.8 --out cutter.json --check
 """
 from __future__ import annotations
 
@@ -198,3 +203,123 @@ def footprint(s_long):
     consumes. Two joints closer together than ahead+behind cut into each
     other's interlock and the segment between them comes out in pieces."""
     return FOOTPRINT_AHEAD * s_long, FOOTPRINT_BEHIND * s_long
+
+
+# ======================================================================
+# Handing it to MetaMeld
+# ======================================================================
+# The tool was authored in the editor and this is the way back, so it can be
+# placed against a baked fish by eye instead of only by `scales_for`. The two
+# frames differ: the tool runs along its own +y with its plate at z = PLATE,
+# the generator runs x nose->tail with the plate at z = 0. `tool_sdf` maps one
+# to the other with t = S.w/s + c, S being the x/y swap, so the scene has to
+# carry S the other way.
+#
+# S is a reflection, so a shape's rotation cannot simply be multiplied by it --
+# S.R is not a rotation. What works is the conjugate S.R.S, which is, paid for
+# by evaluating the shape in a locally swapped frame. Every primitive here
+# survives that swap: a torus and a plane are about their local z and do not
+# notice, an ellipsoid does, and gets its first two diameters exchanged.
+#
+# Scaling is uniform only. `tool_sdf` scales each axis on its own, which is a
+# thing the editor's shape list cannot say -- a rotated ellipsoid stretched
+# along world x is no longer an ellipsoid about its own axes. Export at the
+# scale you want, or export at 1 and scale it in MetaMeld.
+_SWAP = np.array([[0.0, 1, 0], [1, 0, 0], [0, 0, 1]])
+
+
+def _euler_to_m(r):
+    """Rz*Ry*Rx, degrees in -- the editor's convention."""
+    a, b, c = np.deg2rad(r)
+    ca, sa, cb, sb, cc, sc = (np.cos(a), np.sin(a), np.cos(b),
+                              np.sin(b), np.cos(c), np.sin(c))
+    return np.array([
+        [cc * cb, cc * sb * sa - sc * ca, cc * sb * ca + sc * sa],
+        [sc * cb, sc * sb * sa + cc * ca, sc * sb * ca - cc * sa],
+        [-sb,     cb * sa,                cb * ca]])
+
+
+def _m_to_euler(m):
+    b = np.arcsin(np.clip(-m[2, 0], -1.0, 1.0))
+    if abs(np.cos(b)) > 1e-7:
+        a = np.arctan2(m[2, 1], m[2, 2])
+        c = np.arctan2(m[1, 0], m[0, 0])
+    else:                                   # pitch at +/-90: roll takes it all
+        a, c = np.arctan2(-m[1, 2], m[1, 1]), 0.0
+    return [float(np.rad2deg(v)) for v in (a, b, c)]
+
+
+def to_metameld(xa=0.0, scale=1.0, name="Cutter"):
+    """The tool as an editor document, in the generator's coordinates.
+
+    Placed at joint `xa` on the fish's long axis, its plate on z = 0, at a
+    uniform `scale` -- the same solid `tool_sdf(X, Y, Z, xa, s, s, s)` cuts.
+    The cuts target the cutter's own body, so importing this beside a fish
+    carves nothing: it arrives as a solid to be looked at and moved."""
+    s = float(scale)
+    nodes = []
+    for op, kind, k, p, r, dim in TOOL_NODES:
+        # centre: out of the tool's frame, then swapped into the fish's
+        w = _SWAP @ (np.array(p, float) - np.array([0.0, ANCHOR, PLATE]))
+        pos = [w[0] * s + xa, w[1] * s, w[2] * s]
+        rot = _m_to_euler(_SWAP @ _euler_to_m(r) @ _SWAP)
+        # a torus carries radii and an ellipsoid diameters -- both just scale.
+        # The local x/y swap the conjugation leaves behind is invisible to a
+        # torus (it is about its local z) but not to an ellipsoid.
+        d = [dim[1], dim[0], dim[2]] if kind == "ellipsoid" else list(dim)
+        d = [0, 0, 0] if kind == "plane" else [v * s for v in d]
+        nodes.append(dict(t=kind, on=True, op=op, k=k * s, b=0,
+                          tg=None if op == "add" else [0], fi=0,
+                          p=[round(v, 4) for v in pos],
+                          r=[round(v, 4) for v in rot],
+                          d=[round(v, 4) for v in d], round=0,
+                          mx=False, my=False, mz=False))
+    return {"version": 2, "bodies": [{"id": 0, "name": name, "on": True}],
+            "nodes": nodes}
+
+
+if __name__ == "__main__":
+    import argparse
+    import json
+
+    ap = argparse.ArgumentParser(
+        description="Write the joint cutter as a MetaMeld scene.")
+    ap.add_argument("--at", type=float, default=0.0,
+                    help="joint position along the fish, mm (default 0)")
+    ap.add_argument("--scale", type=float, default=1.0,
+                    help="uniform scale (default 1; scales_for's is per-axis "
+                         "and cannot be written as a scene)")
+    ap.add_argument("--name", default="Cutter", help="the body's name")
+    ap.add_argument("--out", default="cutter.json")
+    ap.add_argument("--check", action="store_true",
+                    help="re-read the file as the editor does and hold it to "
+                         "tool_sdf")
+    a = ap.parse_args()
+    doc = to_metameld(a.at, a.scale, a.name)
+    with open(a.out, "w") as fh:
+        json.dump(doc, fh, indent=1)
+    print(f"{a.out}: {len(doc['nodes'])} nodes, joint at x={a.at:g}, "
+          f"scale {a.scale:g}")
+
+    if a.check:
+        import os
+        import sys
+        sys.path.insert(0, os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "experiments", "ring_joints"))
+        import sdf_json                                    # the editor's twin
+
+        s = a.scale
+        rng = np.random.default_rng(7)
+        lo = [a.at - 20 * s, -35 * s, -6 * s]
+        hi = [a.at + 45 * s, 35 * s, 50 * s]
+        P = rng.uniform(lo, hi, size=(20000, 3))
+        X, Y, Z = (P[:, i].astype(F32) for i in range(3))
+        mine = tool_sdf(X, Y, Z, a.at, s, s, s)
+        theirs = sdf_json.build(json.loads(json.dumps(doc)), 0, X, Y, Z)
+        err = float(np.max(np.abs(mine - theirs)))
+        agree = float(np.mean((mine < 0) == (theirs < 0)) * 100)
+        inside = int((mine < 0).sum())
+        print(f"vs tool_sdf over {len(P)} points ({inside} inside): "
+              f"max |err| {err:.3g} mm, same sign {agree:.4f}%")
+        raise SystemExit(0 if err < 1e-3 else 1)
