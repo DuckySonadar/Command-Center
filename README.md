@@ -323,6 +323,27 @@ the back, and end-to-end with the neighbouring joint's shell — that last
 one is usually what binds, so *longer segments*, not a wider body, are
 what buy bigger joints.
 
+### Placing the ring cutter by hand
+
+`joint_style='tool'` builds each joint by subtracting `joint_tool.py`'s
+solid, which sizes and places itself against the local section — that
+self-placement is the whole point of the linkage. Three parameters ride
+on top of it, for when the automatic answer lands somewhere you would
+rather it did not:
+
+| knob | default | what it does |
+|------|---------|--------------|
+| `tool_offset` | 0.0 | slide the solid along the body, mm. The **cut** stays where the regions put it; only the solid moves |
+| `tool_lift` | 0.0 | raise it off the build plate, mm |
+| `tool_scale` | 1.0 | × the automatic section fit. Also scales the footprint, so a smaller cutter fits more segments |
+
+They are ignored by the other linkages, which have no solid to place.
+The NURBS designer has them as sliders and draws the cutter's
+cross-section in both draw views while you move it, which is the way to
+use them; `joint_tool.py --at X --lift Z --scale S --out cutter.json`
+writes the same placement as a MetaMeld scene if you want to look at the
+solid itself.
+
 Print notes: run `--coupon` first and print the one-joint test;
 `--preview` is for looking only (at 0.62 mm voxels the 0.55 mm joint
 clearances fuse — the STL will report fewer shells than expected).
@@ -359,12 +380,15 @@ Two things still cross the boundary, and neither is a file:
 - `joint_tool.py` holds the ring-linkage solid that the NURBS designer
   ports to JS. The port is checked against `joint_tool.raw` to 3e-14; if
   the solid changes here, that check is what should catch the drift.
+  `experiments/ring_joints/check_tool_port.py` is that check: it runs the
+  designer's core under node and holds `toolRaw` and `toolSDF` — placement,
+  lift and scale included — to `joint_tool`'s own.
 - The same file writes the cutter back out as a MetaMeld scene, so it can
   be dropped into the editor and moved around by hand next to a baked
   fish:
 
   ```
-  python3 joint_tool.py --at 62.5 --out cutter.json [--scale 0.8] --check
+  python3 joint_tool.py --at 62.5 --out cutter.json [--scale 0.8] [--lift 3] --check
   ```
 
   `--at` is the joint's position along the fish and `--scale` a uniform

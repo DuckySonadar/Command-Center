@@ -162,7 +162,8 @@ def raw(X, Y, Z):
     return d
 
 
-def tool_sdf(X, Y, Z, xa=0.0, s_wide=1.0, s_long=1.0, s_tall=1.0, gap=None):
+def tool_sdf(X, Y, Z, xa=0.0, s_wide=1.0, s_long=1.0, s_tall=1.0, gap=None,
+             lift=0.0):
     """The tool placed at joint `xa`, in the generator's coordinates.
 
     The generator runs x nose->tail and the tool runs y, so the axes swap.
@@ -175,10 +176,15 @@ def tool_sdf(X, Y, Z, xa=0.0, s_wide=1.0, s_long=1.0, s_tall=1.0, gap=None):
     thickness times the scale, so the clearance shrinks along the fish along
     with everything else. With it, the tool is eroded (or dilated) by half the
     difference after scaling, so every joint gets the same gap whatever the
-    section is."""
+    section is.
+
+    `lift` raises the tool off the build plate. Its own plate lands on z = 0
+    by default, which is where a joint wants to be on a fish that prints
+    belly-down; lifting it is for looking at what the cut is doing, not
+    something a finished print usually wants."""
     tx = (Y / s_wide).astype(F32)
     ty = ((X - xa) / s_long + ANCHOR).astype(F32)
-    tz = (Z / s_tall + PLATE).astype(F32)
+    tz = ((Z - lift) / s_tall + PLATE).astype(F32)
     s = min(s_wide, s_long, s_tall)
     d = raw(tx, ty, tz) * s
     if gap is not None:
@@ -249,11 +255,12 @@ def _m_to_euler(m):
     return [float(np.rad2deg(v)) for v in (a, b, c)]
 
 
-def to_metameld(xa=0.0, scale=1.0, name="Cutter"):
+def to_metameld(xa=0.0, scale=1.0, lift=0.0, name="Cutter"):
     """The tool as an editor document, in the generator's coordinates.
 
-    Placed at joint `xa` on the fish's long axis, its plate on z = 0, at a
-    uniform `scale` -- the same solid `tool_sdf(X, Y, Z, xa, s, s, s)` cuts.
+    Placed at joint `xa` on the fish's long axis, its plate `lift` above
+    z = 0, at a uniform `scale` -- the same solid that
+    `tool_sdf(X, Y, Z, xa, s, s, s, lift=lift)` cuts.
     The cuts target the cutter's own body, so importing this beside a fish
     carves nothing: it arrives as a solid to be looked at and moved."""
     s = float(scale)
@@ -261,7 +268,7 @@ def to_metameld(xa=0.0, scale=1.0, name="Cutter"):
     for op, kind, k, p, r, dim in TOOL_NODES:
         # centre: out of the tool's frame, then swapped into the fish's
         w = _SWAP @ (np.array(p, float) - np.array([0.0, ANCHOR, PLATE]))
-        pos = [w[0] * s + xa, w[1] * s, w[2] * s]
+        pos = [w[0] * s + xa, w[1] * s, w[2] * s + lift]
         rot = _m_to_euler(_SWAP @ _euler_to_m(r) @ _SWAP)
         # a torus carries radii and an ellipsoid diameters -- both just scale.
         # The local x/y swap the conjugation leaves behind is invisible to a
@@ -289,17 +296,19 @@ if __name__ == "__main__":
     ap.add_argument("--scale", type=float, default=1.0,
                     help="uniform scale (default 1; scales_for's is per-axis "
                          "and cannot be written as a scene)")
+    ap.add_argument("--lift", type=float, default=0.0,
+                    help="raise it off the build plate, mm (default 0)")
     ap.add_argument("--name", default="Cutter", help="the body's name")
     ap.add_argument("--out", default="cutter.json")
     ap.add_argument("--check", action="store_true",
                     help="re-read the file as the editor does and hold it to "
                          "tool_sdf")
     a = ap.parse_args()
-    doc = to_metameld(a.at, a.scale, a.name)
+    doc = to_metameld(a.at, a.scale, a.lift, a.name)
     with open(a.out, "w") as fh:
         json.dump(doc, fh, indent=1)
     print(f"{a.out}: {len(doc['nodes'])} nodes, joint at x={a.at:g}, "
-          f"scale {a.scale:g}")
+          f"scale {a.scale:g}, lift {a.lift:g}")
 
     if a.check:
         import os
@@ -311,11 +320,11 @@ if __name__ == "__main__":
 
         s = a.scale
         rng = np.random.default_rng(7)
-        lo = [a.at - 20 * s, -35 * s, -6 * s]
-        hi = [a.at + 45 * s, 35 * s, 50 * s]
+        lo = [a.at - 20 * s, -35 * s, a.lift - 6 * s]
+        hi = [a.at + 45 * s, 35 * s, a.lift + 50 * s]
         P = rng.uniform(lo, hi, size=(20000, 3))
         X, Y, Z = (P[:, i].astype(F32) for i in range(3))
-        mine = tool_sdf(X, Y, Z, a.at, s, s, s)
+        mine = tool_sdf(X, Y, Z, a.at, s, s, s, lift=a.lift)
         theirs = sdf_json.build(json.loads(json.dumps(doc)), 0, X, Y, Z)
         err = float(np.max(np.abs(mine - theirs)))
         agree = float(np.mean((mine < 0) == (theirs < 0)) * 100)
