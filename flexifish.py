@@ -78,6 +78,14 @@ class FishParams:
     joint_gap: float = 0.0             # "tool": fixed clearance at every
                                        # joint; 0 keeps the tool's own, which
                                        # tapers with the body (~1.2 -> 0.6 mm)
+    # Where the ring cutter sits, on top of the fit it works out for itself.
+    # The defaults are that automatic fit; these are for driving it by hand
+    # when the automatic one lands somewhere you would rather it did not --
+    # too far into a segment, too deep, too big for the section. Ignored by
+    # the other linkages, which have nothing to place.
+    tool_offset: float = 0.0           # slide it along the body, mm
+    tool_lift: float = 0.0             # raise it off the build plate, mm
+    tool_scale: float = 1.0            # x the automatic section fit
     n_segments: int = 5                # articulated segments between head and tail piece
     head_length: float = 34.0          # nose -> first joint
     tail_root_len: float = 12.0        # solid peduncle length ahead of the caudal fin
@@ -408,7 +416,7 @@ class FishBuilder:
         out = []
         for j in self.joints:
             if p.joint_style == "tool":
-                out.append((j["xa"] - j["ahead"], j["xa"] + j["behind"]))
+                out.append((j["xt"] - j["ahead"], j["xt"] + j["behind"]))
             else:
                 out.append((j["xa"] - p.face_gap / 2, j["xa"] + p.face_gap / 2))
         return out
@@ -575,7 +583,8 @@ class FishBuilder:
         Sized on the section at `first`, where the body is deepest and the
         tool therefore largest. Since the layouts space their cuts evenly, one
         conservative figure is the right shape of answer."""
-        need = joint_tool.MIN_SPACING * joint_tool.scales_for(self, first)[1]
+        need = (joint_tool.MIN_SPACING * self.p.tool_scale
+                * joint_tool.scales_for(self, first)[1])
         m = max(1, min(n, int((last - first) // need)))
         if m != n:
             self.warnings.append(
@@ -598,12 +607,16 @@ class FishBuilder:
         n = len(self.cuts)
         self.joints = []
         for i, xa in enumerate(self.cuts):
-            s_wide, s_long, s_tall = joint_tool.scales_for(self, xa)
+            s_wide, s_long, s_tall = (
+                v * p.tool_scale for v in joint_tool.scales_for(self, xa))
             ahead, behind = joint_tool.footprint(s_long)
             s = min(s_wide, s_long, s_tall)
             auto = joint_tool.THICKNESS * s
             self.joints.append(dict(
                 xa=float(xa), top=self.top_at(xa),
+                # where the cut goes vs where the tool goes: the segmentation
+                # is decided by `xa`, and the solid may be placed off it
+                xt=float(xa + p.tool_offset), lift=float(p.tool_lift),
                 s_wide=float(s_wide), s_long=float(s_long),
                 s_tall=float(s_tall),
                 gap=float(p.joint_gap if p.joint_gap > 0 else auto),
@@ -613,6 +626,15 @@ class FishBuilder:
                     f"joint at x={xa:.1f}: joint_gap={p.joint_gap:.2f} mm is "
                     f"far wider than the tool's own {auto:.2f} mm here; the "
                     f"rings are eroded that much too and may end up slack")
+            if i == 0 and p.tool_lift > 0.05:
+                # the tool's own plate is its bottom: nothing below it is ever
+                # removed, so a lifted cutter leaves a continuous bridge of
+                # body under every joint. Useful for looking at where the cut
+                # sits, never something to print.
+                self.warnings.append(
+                    f"tool_lift={p.tool_lift:.2f} mm holds the cutter off the "
+                    f"build plate, so {p.tool_lift:.2f} mm of body is left "
+                    f"under every joint and the segments print as one piece")
             if self.joints[-1]["gap"] < 0.3:
                 self.warnings.append(
                     f"joint at x={xa:.1f}: only {self.joints[-1]['gap']:.2f} mm "
@@ -860,8 +882,8 @@ class FishBuilder:
         out = F
         for j in self.joints:
             out = np.maximum(out, -joint_tool.tool_sdf(
-                X, Y, Z, xa=j["xa"], s_wide=j["s_wide"], s_long=j["s_long"],
-                s_tall=j["s_tall"],
+                X, Y, Z, xa=j["xt"], s_wide=j["s_wide"], s_long=j["s_long"],
+                s_tall=j["s_tall"], lift=j["lift"],
                 gap=p.joint_gap if p.joint_gap > 0 else None))
         return out
 
