@@ -229,8 +229,7 @@ it's mirrored).
 | `plan`         | top  | open   | nose tip → caudal root, half-width      |
 | `dorsal_fin`   | side | closed | drawn overlapping the back so it fuses  |
 | `caudal_fin`   | side | closed | the tail fan — draw the fork right in   |
-| `pectoral_fin` | top  | closed | front paddle, drawn in place, overlapping the body edge |
-| `pelvic_fin`   | top  | closed | rear paddle, same rules                 |
+| `pelvic_fin`   | top  | closed | the side paddle, drawn in place under the dorsal fin, overlapping the body edge |
 
 Each curve is `{"points": [[x,y],...], "degree": 3, "weights": [...]}`
 (degree and weights optional; weights > 1 pull the curve toward a
@@ -243,11 +242,16 @@ to see what you drew.
 ### The regions (derived, not typed in)
 
 Everything ahead of the dorsal fin outline is the **head** region: it
-stays rigid and carries the eyes and mouth. The lower head region holds
-the **pectoral** and **pelvic** fin regions — both paddles must attach
-there (validated), since their ball sockets can't straddle a joint cut.
-The dorsal outline claims the **dorsal** region: exactly one articulated
-segment with the fin centered in it. The **tail** region is the only one
+stays rigid and carries the eyes and mouth. The dorsal outline claims
+the **dorsal** region: exactly one articulated segment with the fin
+centered in it — and the **pelvic** pair rides that same segment, so
+draw the paddle under the dorsal fin. A ball socket is a hollow, not a
+bump: a joint cut through one prints it in halves and the fin falls
+out, so where the socket lands is validated rather than left to the
+shell count. (There used to be a pectoral pair on the head as well.
+Its sockets pushed the first cut back until they fitted ahead of it,
+which cost a segment, and on the plate the two pairs competed for the
+same skirt of free space beside the body.) The **tail** region is the only one
 with a variable segment count (`regions.tail_segments`), and the
 **caudal** region is the solid tail-root + fan piece. Draw the dorsal
 fin far forward and its region simply fuses into the rigid head, with
@@ -265,8 +269,8 @@ python3 flexifish_nurbs.py --set tail.length=1.3 --set head.height=0.9 \
 ```
 
 `head/dorsal/tail` have `.length .width .height`; `dorsal` adds
-`.fin_height`; `caudal` has `.length .height .thickness`;
-`pectoral/pelvic` have `.length .width` (about their attachment).
+`.fin_height`; `caudal` has `.length .height .thickness`; `pelvic` has
+`.length .width` (about its attachment).
 Joint clearances, eyes, walls etc. are still `FishParams`
 (`--config`, `--list-params`, same as flexifish.py).
 

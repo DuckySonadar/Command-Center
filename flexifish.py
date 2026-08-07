@@ -113,14 +113,15 @@ class FishParams:
     fin_margin: float = 2.2            # keep-out between a fin base and segment faces
 
     # ---- side fins: flat on the plate, ball-jointed to the body --------
-    # Each is a separate print-in-place part: a plate-cut ball captured in a
-    # spherical socket. Pectorals ride the head, pelvics ride the dorsal
-    # fin's segment. Set a length to 0 to remove that pair.
-    pec_length: float = 15.0
-    pec_width: float = 9.5             # chord (fore-aft size of the paddle)
-    pec_thickness: float = 3.6
-    pec_pos: float = 0.62              # fraction along the head
-    pec_sweep_deg: float = 32.0        # swept back toward the tail
+    # One pair, a separate print-in-place part each: a plate-cut ball captured
+    # in a spherical socket, riding the dorsal fin's segment. Set the length
+    # to 0 to remove the pair.
+    #
+    # There used to be a pectoral pair on the head as well. Two pairs is what
+    # a fish has and one pair is what this prints well: the head pair sat far
+    # enough forward that its sockets pushed the first joint cut back, which
+    # cost a segment, and on the plate the two pairs' paddles competed for the
+    # same skirt of free space beside the body.
     pelvic_length: float = 13.0
     pelvic_width: float = 8.5
     pelvic_thickness: float = 3.4
@@ -146,6 +147,28 @@ class FishParams:
     head_point: float = 0.35           # nose shape: 0 = spherical, 1 = pointed
     blend: float = 9.0                 # body blob blend radius (higher = doughier)
     res: float = 0.30                  # voxel size for meshing
+
+
+# Parameters that used to be here. A config written before the pectoral fins
+# came off still describes a fish; it just says something about a fin that is
+# no longer there. Dropping those keys with a word beats refusing to build.
+RETIRED_PARAMS = {"pec_length", "pec_width", "pec_thickness", "pec_pos",
+                  "pec_sweep_deg"}
+
+
+def load_overrides(path):
+    """Read a --config file into a FishParams keyword dict."""
+    over = json.load(open(path))
+    gone = sorted(set(over) & RETIRED_PARAMS)
+    for k in gone:
+        over.pop(k)
+    if gone:
+        print(f"ignoring retired parameter(s) in {path}: {gone} "
+              f"-- the pectoral fins were removed")
+    unknown = sorted(set(over) - {f.name for f in fields(FishParams)})
+    if unknown:
+        sys.exit(f"unknown parameter(s) in {path}: {unknown}")
+    return over
 
 
 # Body silhouette control points: (t along body, half-width frac,
@@ -264,6 +287,9 @@ class FishBuilder:
             self.p = p = self._fit_tool_segments(p)
         self._layout()
         self._size_joints()
+        # after sizing, not before: how much body a joint disturbs is not
+        # known until it has been sized, and a ring joint reaches far
+        self._check_side_fins()
 
     # ---------------- core body (blobs + flat belly) ----------------
     def core(self, X, Y, Z):
@@ -366,6 +392,71 @@ class FishBuilder:
             raise SystemExit(
                 f"segments as short as {np.diff(self.cuts).min():.1f} mm; "
                 f"reduce n_segments or move the dorsal fin")
+
+    def _joint_spans(self):
+        """How much of the body's *skin* each joint disturbs, as (x0, x1).
+
+        A ball joint is a hollow on the centreline: the only thing it does
+        out at the surface is cut the body in two, so its span is the cut
+        plane and the gap either side of it. The ring tool is a solid
+        subtracted from the whole section, shroud and all -- it eats
+        `FOOTPRINT_AHEAD` in front of the joint and `FOOTPRINT_BEHIND`
+        behind, about 26 mm of body at full size, most of it on one side.
+        Anything at the surface that has to survive intact keeps clear of
+        these."""
+        p = self.p
+        out = []
+        for j in self.joints:
+            if p.joint_style == "tool":
+                out.append((j["xa"] - j["ahead"], j["xa"] + j["behind"]))
+            else:
+                out.append((j["xa"] - p.face_gap / 2, j["xa"] + p.face_gap / 2))
+        return out
+
+    def _check_side_fins(self):
+        """Every side-fin socket has to sit inside ONE piece of the body.
+
+        The socket is a hollow, not a bump: a joint reaching into it leaves
+        two half-sockets, one either side of a joint that then moves, and the
+        fin falls out. The pelvic pair rides the dorsal fin's segment, which
+        is the shortest piece on the fish, so this is worth saying plainly
+        rather than leaving it to the shell count at the end."""
+        spans = self._joint_spans()
+        if not spans:
+            return                                # one solid fish, no joints
+        inf = float("inf")
+        edges = [(-inf, -inf)] + spans + [(inf, inf)]
+        for g in self._fins():
+            x, r = g["cx"], g["boss_r"] + 1.0
+            hit = [(a, b) for a, b in spans if a < x + r and b > x - r]
+            if not hit:
+                continue
+            free = [(a[1], b[0]) for a, b in zip(edges, edges[1:])
+                    if b[0] - a[1] > 2 * r]
+
+            def show(w):
+                a, b = w
+                if a == -inf:
+                    return f"ahead of x = {b - r:.1f}"
+                if b == inf:
+                    return f"behind x = {a + r:.1f}"
+                return f"x = {a + r:.1f} .. {b - r:.1f}"
+
+            free.sort(key=lambda w: min(abs(w[0] - x), abs(w[1] - x)))
+            where = ("; it fits " + " or ".join(show(w) for w in free[:2])
+                     if free else
+                     "; no piece of this fish is long enough for it -- "
+                     "lengthen the body, or draw a narrower paddle (the "
+                     "socket is sized from the outline's chord)")
+            if self.p.joint_style == "tool":
+                where += (". A ring joint takes far more body than a ball "
+                          "does, so joint_style='ball' may be the easier fix "
+                          "than moving the fin")
+            raise SystemExit(
+                f"the {g.get('name', 'side fin')} socket at x = {x:.1f} "
+                f"(radius {g['boss_r']:.1f} mm) runs into the joint that "
+                f"takes x = {hit[0][0]:.1f} .. {hit[0][1]:.1f}, so it would "
+                f"print in halves and the fin would fall out{where}.")
 
     # ---------------- joint sizing: plate-cut ball and socket ---------
     @staticmethod
@@ -607,30 +698,27 @@ class FishBuilder:
 
     # ---------------- side fins: flat, plate-cut ball joints ----------
     def _fins(self):
-        p, out = self.p, []
-        for which in ("pec", "pel"):
-            if which == "pec":
-                if p.pec_length <= 0.5:
-                    continue
-                xb, span = p.pec_pos * p.head_length, p.pec_length
-                chord, th, sw = p.pec_width, p.pec_thickness, p.pec_sweep_deg
-            else:
-                if p.pelvic_length <= 0.5:
-                    continue
-                xb, span = p.len_nose_to_dorsal, p.pelvic_length
-                chord, th = p.pelvic_width, p.pelvic_thickness
-                sw = p.pelvic_sweep_deg
-            rb = min(max(0.42 * chord, 3.0), 5.0)
-            # ball center high enough that the plate-cut socket lip still
-            # wraps below the ball's equator -> captured in every direction
-            zc = max(0.62 * rb, float(np.sqrt(2 * rb * p.clearance)) + 0.45)
-            cy = self.halfwidth_at(xb, zc) - 0.2 * rb
-            a = np.deg2rad(sw)
-            out.append(dict(cx=xb, cy=cy, cz=zc, rb=rb,
-                            dx=float(np.sin(a)), dy=float(np.cos(a)),
-                            span=span, chord=chord, th=th,
-                            rn=0.45 * rb, boss_r=rb + p.clearance + p.wall))
-        return out
+        """The pelvic pair, on the dorsal fin's segment.
+
+        `len_nose_to_dorsal` is the centre of that segment by construction --
+        `_layout` builds the segment around the fin -- so anchoring the balls
+        there keeps both sockets as far from the two cut faces as the segment
+        allows, whatever the layout does with the rest of the body."""
+        p = self.p
+        if p.pelvic_length <= 0.5:
+            return []
+        xb, span = p.len_nose_to_dorsal, p.pelvic_length
+        chord, th, sw = p.pelvic_width, p.pelvic_thickness, p.pelvic_sweep_deg
+        rb = min(max(0.42 * chord, 3.0), 5.0)
+        # ball center high enough that the plate-cut socket lip still
+        # wraps below the ball's equator -> captured in every direction
+        zc = max(0.62 * rb, float(np.sqrt(2 * rb * p.clearance)) + 0.45)
+        cy = self.halfwidth_at(xb, zc) - 0.2 * rb
+        a = np.deg2rad(sw)
+        return [dict(name="pelvic", cx=xb, cy=cy, cz=zc, rb=rb,
+                     dx=float(np.sin(a)), dy=float(np.cos(a)),
+                     span=span, chord=chord, th=th,
+                     rn=0.45 * rb, boss_r=rb + p.clearance + p.wall)]
 
     def fin_part(self, g, sgn, X, Y, Z):
         """One fin: plate-cut ball + neck + flat paddle, swept tailward."""
@@ -651,7 +739,14 @@ class FishBuilder:
         b_ = (X - fcx) * g["dx"] + (Y - fcy) * dy
         pad = sd_ellipsoid(a_, b_, Z, 0.0, 0.0, zf,
                            g["chord"] / 2, g["span"] / 2, g["th"] / 2)
-        f = smin(smin(ball, neck, F32(1.5)), pad, F32(2.0))
+        # 1.0, not the 1.5 this used to be: the fillet where the neck
+        # leaves the ball grows material *outward*, into the very clearance
+        # the joint needs to turn. At 1.5 the ball-to-socket gap measured
+        # 0.43 mm against a nominal 0.55, which is under two voxels at the
+        # 0.3 mm print resolution -- meshers bridged it and the fin came out
+        # welded to the body. At 1.0 the gap is 0.52 and the tightest place
+        # is no longer the ball.
+        f = smin(smin(ball, neck, F32(1.0)), pad, F32(2.0))
         return np.maximum(f, (-Z).astype(F32))
 
     def fin_cavity(self, g, X, Y, Z):
@@ -813,7 +908,7 @@ class FishBuilder:
         x0 = -0.2 * self.top_at(0.05 * self.L) - 3.0
         x1 = self.L + p.tail_length + p.tail_fork + 4.0
         yw = (p.body_width / 2
-              + max(p.eye_proud, max(p.pelvic_length, p.pec_length) + 7.0)
+              + max(p.eye_proud, p.pelvic_length + 7.0)
               + 3.0)
         z1 = max(self.top_at(p.len_nose_to_dorsal) + p.dorsal_height,
                  self.top_at(0.2 * self.L), p.tail_height) + 3.0
@@ -969,11 +1064,7 @@ def main(argv=None):
 
     p = FishParams()
     if args.config:
-        overrides = json.load(open(args.config))
-        unknown = set(overrides) - {f.name for f in fields(FishParams)}
-        if unknown:
-            sys.exit(f"unknown parameter(s) in {args.config}: {sorted(unknown)}")
-        p = replace(p, **overrides)
+        p = replace(p, **load_overrides(args.config))
     if args.res:
         p = replace(p, res=args.res)
     res = 0.62 if args.preview and not args.res else p.res
@@ -993,8 +1084,7 @@ def main(argv=None):
     # a segmented fish is head + n segments + tail root; an unsegmented one is
     # a single body. The side fins are free either way.
     body_pieces = 1 if p.joint_style == "none" else p.n_segments + 2
-    expected = (body_pieces + (2 if p.pec_length > 0.5 else 0)
-                + (2 if p.pelvic_length > 0.5 else 0))
+    expected = body_pieces + (2 if p.pelvic_length > 0.5 else 0)
     print(f"{args.out}: {len(faces)} tris, manifold={man}, "
           f"shells={shells} (expected {expected})  [{time.time()-t0:.0f}s]")
     if shells != expected and not args.preview:
