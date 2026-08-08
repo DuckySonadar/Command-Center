@@ -8,12 +8,17 @@ holds one to the other.
 
     python3 check_tool_port.py
 
-Two things are compared, on random points rather than a lattice so nothing
-lands on a symmetry by luck:
+Three things are compared. The two fields are sampled on random points
+rather than a lattice, so nothing lands on a symmetry by luck:
 
   raw       the solid in its own frame -- the node list and the blends
   placed    the solid as a joint uses it: scaled to a section, moved to `xa`,
             and displaced by tool_offset / tool_lift / tool_scale
+  joints    the placement pipeline itself, on the default fish: every joint's
+            cut, tool position, lift, three scales, clearance and footprint,
+            with per-joint `tool_place` entries in play. The field maths being
+            identical does not help if the two sides disagree about where to
+            put the thing.
 
 The two are held to different tolerances on purpose. `raw` is compared in
 double precision on both sides and has to agree to 1e-12 -- that is the same
@@ -42,7 +47,7 @@ SITE = os.environ.get("MAKERCAVE_REPO",
                       os.path.join(REPO, os.pardir,
                                    "mywebsiterepository-Iknowtotallyoriginal"))
 EDITOR = os.path.join(SITE, "tools", "fish-editor-nurbs.html")
-TOL_RAW, TOL_PLACED = 1e-12, 1e-4
+TOL_RAW, TOL_PLACED, TOL_JOINT = 1e-12, 1e-4, 1e-5
 
 
 def core_source():
@@ -75,8 +80,16 @@ const out = [];
 for (const q of P.raw) out.push(NurbsCore.toolRaw(q[0], q[1], q[2]));
 for (const q of P.placed)
   out.push(NurbsCore.toolSDF(q[0], q[1], q[2], P.joint, P.gap));
-console.log(JSON.stringify(out));
+const face = Object.assign({}, NurbsCore.DEFAULTS, NurbsCore.FIXED, P.face);
+const C = NurbsCore.prepare(P.shape, face, false);
+console.log(JSON.stringify({ field: out, joints: C.joints,
+                             errors: C.errors }));
 """
+
+# what a joint has to agree about, and what it is called on each side
+JOINT_KEYS = [("xa", "xa"), ("xt", "xt"), ("lift", "lift"),
+              ("s_wide", "sWide"), ("s_long", "sLong"), ("s_tall", "sTall"),
+              ("gap", "gap"), ("ahead", "ahead"), ("behind", "behind")]
 
 
 def main():
@@ -98,6 +111,16 @@ def main():
     placed = rng.uniform([jd["xt"] - 20, -30, -4], [jd["xt"] + 50, 30, 55],
                          size=(4000, 3))
 
+    # the placement pipeline, on the default fish. The pelvic fin comes out
+    # because a ring joint reaches straight through its socket and the
+    # generator refuses to build that -- see FishBuilder._check_side_fins.
+    shape = {"curves": {"pelvic_fin": None}}
+    cfg = {"joint_style": "tool", "tool_offset": 3.5, "tool_lift": 1.25,
+           "tool_scale": 0.9,
+           "tool_place": [{"off": -6.0, "long": 1.3},
+                          None,
+                          {"lift": 2.5, "tall": 0.75, "off": 4.0}]}
+
     probe = os.path.join(HERE, "_tool_probe.js")
     args = os.path.join(HERE, "_tool_args.json")
     with open(probe, "w") as f:
@@ -105,14 +128,15 @@ def main():
         f.write(PROBE)
     with open(args, "w") as f:
         json.dump({"raw": raw.tolist(), "placed": placed.tolist(),
-                   "joint": jd, "gap": gap}, f)
+                   "joint": jd, "gap": gap, "shape": shape, "face": cfg}, f)
     try:
         r = subprocess.run(["node", probe, args], capture_output=True,
                            text=True, check=True)
     finally:
         for path in (probe, args):
             os.remove(path)
-    theirs = np.array(json.loads(r.stdout))
+    got = json.loads(r.stdout)
+    theirs = np.array(got["field"])
 
     print(f"vs {where}")
     bad = 0
@@ -130,6 +154,31 @@ def main():
         print(f"  {name:7s} max |err| {err:.2e} (tol {tol:.0e})   "
               f"sign agreement {agree:.3f}%")
         bad += err > tol or agree < 100.0
+
+    # ---- the placement pipeline ------------------------------------
+    sys.path.insert(0, REPO)
+    import flexifish_nurbs as fn                                # noqa: E402
+    from flexifish import FishParams                            # noqa: E402
+    mine = fn.NurbsFishBuilder(FishParams(**cfg), shape).joints
+    if got["errors"]:
+        print(f"  joints  the designer refused the test fish: {got['errors']}")
+        return 1
+    if len(mine) != len(got["joints"]):
+        print(f"  joints  {len(mine)} here, {len(got['joints'])} there")
+        return 1
+    worst, where = 0.0, ""
+    for i, (a, b) in enumerate(zip(mine, got["joints"])):
+        for pk, jk in JOINT_KEYS:
+            d = abs(float(a[pk]) - float(b[jk]))
+            if d > worst:
+                worst, where = d, f"joint {i} {pk}"
+    # 1e-5, not machine epsilon: every scale here is `top_at(x)` divided by
+    # a reference, and `top_at` probes a float32 grid on both sides. What this
+    # is looking for is a placement that differs, which starts at a hundredth
+    # of a millimetre, not at the last bit of a float.
+    print(f"  joints  {len(mine)} joints, worst |err| {worst:.2e} "
+          f"(tol {TOL_JOINT:.0e}){'   at ' + where if worst else ''}")
+    bad += worst > TOL_JOINT
     print("\nMATCH" if not bad else "\nMISMATCH")
     return 1 if bad else 0
 
