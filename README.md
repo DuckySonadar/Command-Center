@@ -336,6 +336,15 @@ rather it did not:
 | `tool_offset` | 0.0 | slide the solid along the body, mm. The **cut** stays where the regions put it; only the solid moves |
 | `tool_lift` | 0.0 | raise it off the build plate, mm |
 | `tool_scale` | 1.0 | × the automatic section fit. Also scales the footprint, so a smaller cutter fits more segments |
+| `tool_place` | `[]` | per-joint nudges on top of those three, by joint index |
+
+`tool_place` entries are `{"off": mm, "lift": mm, "long": ×, "tall": ×}`
+and every key is a **delta**: `0` and `1` mean "wherever the three above
+put it", so moving a global still moves every joint including the tweaked
+ones. A missing key, a `null` entry, or an index past the end is the
+global placement exactly. `long`/`tall` are the two axes the designer's
+side view can show, so a per-joint entry never touches the across-body
+scale. The designer writes these when you drag a cutter's bounding box.
 
 They are ignored by the other linkages, which have no solid to place.
 The NURBS designer has them as sliders and draws the cutter's
@@ -382,7 +391,11 @@ Two things still cross the boundary, and neither is a file:
   the solid changes here, that check is what should catch the drift.
   `experiments/ring_joints/check_tool_port.py` is that check: it runs the
   designer's core under node and holds `toolRaw` and `toolSDF` — placement,
-  lift and scale included — to `joint_tool`'s own.
+  lift and scale included — to `joint_tool`'s own, then builds the default
+  fish on both sides with per-joint `tool_place` entries in play and
+  compares every joint's cut, tool position, lift, scales, clearance and
+  footprint. The field maths being identical does not help if the two
+  sides disagree about where to put the thing.
 - The same file writes the cutter back out as a MetaMeld scene, so it can
   be dropped into the editor and moved around by hand next to a baked
   fish:

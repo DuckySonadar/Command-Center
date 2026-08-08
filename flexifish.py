@@ -35,7 +35,7 @@ import json
 import struct
 import sys
 import time
-from dataclasses import dataclass, asdict, fields, replace
+from dataclasses import dataclass, asdict, field, fields, replace
 
 import numpy as np
 
@@ -86,6 +86,14 @@ class FishParams:
     tool_offset: float = 0.0           # slide it along the body, mm
     tool_lift: float = 0.0             # raise it off the build plate, mm
     tool_scale: float = 1.0            # x the automatic section fit
+    # Per-joint nudges on top of those three, indexed by joint. Each entry is
+    # {"off": mm, "lift": mm, "long": x, "tall": x} and every key is a *delta*
+    # on the global: 0 and 1 mean "as placed above", so moving a global slider
+    # still moves every joint including the tweaked ones. A missing entry, a
+    # null, or an index past the end is the global placement exactly.
+    # `long`/`tall` are the two axes the designer's side view can show, so a
+    # per-joint entry never touches the across-body scale.
+    tool_place: list = field(default_factory=list)
     n_segments: int = 5                # articulated segments between head and tail piece
     head_length: float = 34.0          # nose -> first joint
     tail_root_len: float = 12.0        # solid peduncle length ahead of the caudal fin
@@ -594,6 +602,20 @@ class FishBuilder:
                 f"more, or use joint_style='ball'.")
         return m
 
+    def tool_place(self, i):
+        """The per-joint nudge for joint `i`, defaulted.
+
+        Deltas, not absolutes: 0 and 1 mean "wherever the global placement
+        put it", so a global slider still moves a joint that has been nudged
+        by hand."""
+        out = dict(off=0.0, lift=0.0, long=1.0, tall=1.0)
+        place = self.p.tool_place or []
+        if i < len(place) and isinstance(place[i], dict):
+            for k in out:
+                if k in place[i]:
+                    out[k] = float(place[i][k])
+        return out
+
     def _fit_tool_segments(self, p):
         return replace(p, n_segments=self._tool_segment_cap(
             p.head_length, self.L - p.tail_root_len, p.n_segments))
@@ -606,9 +628,13 @@ class FishBuilder:
         segl = np.diff(self.cuts)
         n = len(self.cuts)
         self.joints = []
+        lifted = []
         for i, xa in enumerate(self.cuts):
-            s_wide, s_long, s_tall = (
-                v * p.tool_scale for v in joint_tool.scales_for(self, xa))
+            pl = self.tool_place(i)
+            s_wide, s_long, s_tall = joint_tool.scales_for(self, xa)
+            s_wide *= p.tool_scale
+            s_long *= p.tool_scale * pl["long"]
+            s_tall *= p.tool_scale * pl["tall"]
             ahead, behind = joint_tool.footprint(s_long)
             s = min(s_wide, s_long, s_tall)
             auto = joint_tool.THICKNESS * s
@@ -616,7 +642,8 @@ class FishBuilder:
                 xa=float(xa), top=self.top_at(xa),
                 # where the cut goes vs where the tool goes: the segmentation
                 # is decided by `xa`, and the solid may be placed off it
-                xt=float(xa + p.tool_offset), lift=float(p.tool_lift),
+                xt=float(xa + p.tool_offset + pl["off"]),
+                lift=float(p.tool_lift + pl["lift"]),
                 s_wide=float(s_wide), s_long=float(s_long),
                 s_tall=float(s_tall),
                 gap=float(p.joint_gap if p.joint_gap > 0 else auto),
@@ -626,15 +653,8 @@ class FishBuilder:
                     f"joint at x={xa:.1f}: joint_gap={p.joint_gap:.2f} mm is "
                     f"far wider than the tool's own {auto:.2f} mm here; the "
                     f"rings are eroded that much too and may end up slack")
-            if i == 0 and p.tool_lift > 0.05:
-                # the tool's own plate is its bottom: nothing below it is ever
-                # removed, so a lifted cutter leaves a continuous bridge of
-                # body under every joint. Useful for looking at where the cut
-                # sits, never something to print.
-                self.warnings.append(
-                    f"tool_lift={p.tool_lift:.2f} mm holds the cutter off the "
-                    f"build plate, so {p.tool_lift:.2f} mm of body is left "
-                    f"under every joint and the segments print as one piece")
+            if self.joints[-1]["lift"] > 0.05:
+                lifted.append(i)
             if self.joints[-1]["gap"] < 0.3:
                 self.warnings.append(
                     f"joint at x={xa:.1f}: only {self.joints[-1]['gap']:.2f} mm "
@@ -660,6 +680,19 @@ class FishBuilder:
                         f"that segment is all shroud, with none of its own "
                         f"body showing. Raise dorsal_length/fin_margin if it "
                         f"is the dorsal segment, or cut n_segments.")
+        if lifted:
+            # the tool's own plate is its bottom: nothing below it is ever
+            # removed, so a lifted cutter leaves a continuous bridge of body
+            # under the joint. Useful for looking at where a cut sits, never
+            # something to print.
+            which = ("every joint" if len(lifted) == len(self.joints) else
+                     "joint(s) " + ", ".join(
+                         f"x={self.joints[i]['xa']:.0f}" for i in lifted))
+            deep = max(self.joints[i]["lift"] for i in lifted)
+            self.warnings.append(
+                f"the cutter is held up to {deep:.2f} mm off the build plate "
+                f"at {which}, so that much body is left underneath and those "
+                f"segments print as one piece")
         if n and self.top_at(self.cuts[-1]) < 6.0:
             self.warnings.append(
                 f"the last joint sits where the body is only "
