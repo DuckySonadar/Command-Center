@@ -32,6 +32,39 @@ terminal to stop it.
   Output for each repo is shown in the console panel.
 - **Refresh git status** — shows `git status` for both repos.
 
+## Who commits, and as whom
+
+Commits reach this repo from three places — the GitHub web UI, a Mac, and
+Claude Code sessions running in the cloud — and each arrived with a
+different git identity, including two that were plainly wrong (a personal
+email published in a public repo, and a `…@Users-MacBook-Pro.local`
+address that does not exist). Two files fix that.
+
+`.mailmap` maps every past identity onto one canonical author for display.
+`git log`, `git shortlog` and `git blame` read it automatically; no history
+is rewritten and no commit hash moves. (GitHub's own contributor graph
+ignores `.mailmap` — this fixes the command line and most tooling, which is
+where it is worth fixing.)
+
+`.claude/hooks/session-start.sh` fixes it at the source, setting the author
+on every **remote** Claude Code session so future commits arrive correct.
+It writes `git config --local` only, so it touches this clone and nothing
+else, and it deliberately leaves local sessions alone rather than
+overwriting whatever identity your machine already has.
+
+The canonical identity is the GitHub account plus GitHub's noreply address:
+that is what links a commit to the account, and it keeps a personal email
+out of a public repo. To use it on your own machine:
+
+```bash
+git config --global user.name  "DuckySonadar"
+git config --global user.email "77309815+DuckySonadar@users.noreply.github.com"
+```
+
+Claude stays on the commits it helped with as a `Co-Authored-By` trailer.
+That is the accurate record — the work is directed and owned by the
+repository owner, and the trailer says who helped.
+
 ## Repos
 
 - **Website**: `mywebsiterepository-Iknowtotallyoriginal` (sibling folder)
