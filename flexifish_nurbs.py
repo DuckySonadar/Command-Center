@@ -501,10 +501,15 @@ class NurbsFishBuilder(FishBuilder):
         return d
 
     def _fit_tool_segments(self, p):
-        """No-op here: n_segments is not an input to this fish -- the regions
-        and `regions.tail_segments` decide the cuts, so `_layout` does the
-        capping instead."""
-        return p
+        """Nothing to fit here, but the layout still has to happen.
+
+        The base class searches segment counts by laying each one out and
+        measuring the gaps, and hands back a fish already laid out. This one
+        has no count to search -- n_segments is not an input, the regions and
+        `regions.tail_segments` decide the cuts and `_layout` caps them -- so
+        all that is owed to the caller is the layout itself."""
+        self._layout()
+        return self.p
 
     # ---------------- region-driven segmentation ----------------------
     def _layout(self):
@@ -553,6 +558,16 @@ class NurbsFishBuilder(FishBuilder):
             raise SystemExit(
                 f"segments as short as {np.diff(self.cuts).min():.1f} mm; "
                 f"reduce regions.tail_segments or lengthen the tail region")
+
+    def _dorsal_span(self):
+        """The drawn outline, not `dorsal_length` -- this fish's fin is a
+        curve and the parametric width would be the wrong 16 mm."""
+        S = self.shape
+        if S.dorsal is None:
+            return (0.0, -1.0)                    # no fin to protect
+        lo, hi = self.dorsal_trim
+        return (max(float(S.dorsal[:, 0].min()), lo),
+                min(float(S.dorsal[:, 0].max()), hi))
 
     def region_table(self):
         S, rows = self.shape, []
@@ -933,12 +948,14 @@ def main(argv=None):
 
     verts, faces = mesh(b, res)
     write_stl(args.out, verts, faces)
-    man, shells = mesh_stats(verts, faces)
+    man, shells, specks = mesh_stats(verts, faces)
     # segmented: head + n segments + tail root. Unsegmented: one body.
     body_pieces = 1 if b.p.joint_style == "none" else b.p.n_segments + 2
     expected = body_pieces + 2 * len(b.shape.side_fins)
+    sp = f", {specks} speck{'s' if specks > 1 else ''}" if specks else ""
     print(f"{args.out}: {len(faces)} tris, manifold={man}, "
-          f"shells={shells} (expected {expected})  [{time.time() - t0:.0f}s]")
+          f"shells={shells} (expected {expected}){sp}  "
+          f"[{time.time() - t0:.0f}s]")
     if shells != expected and not args.preview:
         print("WARNING: shell count mismatch -- parts may be fused or "
               "orphaned. Inspect before printing.")
@@ -949,7 +966,7 @@ def main(argv=None):
         cv, cf = mesh(b, res, sub=(lo, hi))
         cp = args.out.replace(".stl", "") + "_joint_test.stl"
         write_stl(cp, cv, cf)
-        cm, cs = mesh_stats(cv, cf)
+        cm, cs, _ = mesh_stats(cv, cf)
         note = "" if isolated else "; neighbouring joints reach into this one"
         print(f"{cp}: {len(cf)} tris, manifold={cm}, shells={cs} "
               f"(expected 2{note})")

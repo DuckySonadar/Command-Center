@@ -8,30 +8,31 @@ shell fits under the skin. That is what makes it fussy -- every term has to be
 solved for the local section, and a section too narrow or a segment too short
 makes it impossible.
 
-This one is *subtracted*. A single solid, authored in the repo's
-`sdf_editor.html` and preserved verbatim below, is cut out of the finished
-body; what is left is two pieces that cannot be pulled apart, because a ring
-belonging to each passes through the other. The solid is deliberately larger
-than any body it will cut -- only the interlock in the middle is ever inside
-the material, and the rest of it hangs outside in free space. That overshoot is
-the point: the outer dimensions do not have to be right, so the whole thing can
-be scaled to the local section without solving anything.
+This one is *subtracted*. A single solid, authored in MetaMeld and preserved
+verbatim below, is cut out of the finished body; what is left is two pieces
+that cannot be pulled apart, because a ring belonging to each passes through
+the other.
 
-The tool's own frame (its build plate is z = 8, and it runs along +y):
+The parting surface is a thin ellipsoidal *shell*. Subtracting a shell divides
+what is inside it from what is outside, so the joint is a ball sitting in a
+socket, with the shell's wall as the printed clearance; the rings pass through
+that shell and are what stop the ball coming back out. It is a different idea
+from the tool it replaced, which was a long cup deliberately larger than any
+body it cut. This one has to *contain* the section instead -- if the shell does
+not enclose the body, the two halves stay joined and nothing articulates.
+HW_REF / H_REF are that containment limit rather than an overshoot.
 
-    y = -2.5 ......... 8.5 ......... 44        z = 8 (plate) .. 49.75
-                       ^ the joint
+The tool's frame runs the way the generator does -- x nose to tail, y across,
+z up -- so there is no axis swap. Its build plate is its own z = 0, and it
+reaches 7.6 mm below that, which is what carries the cut through the fish's
+flat belly:
 
-so it is lopsided about the joint it cuts: 11 mm ahead, 35.5 mm behind. Most of
-that tail is the two walls of a cup that wraps the rear piece's nose from the
-outside, well clear of the body; the part that actually removes material stops
-around 22 mm behind (see FOOTPRINT_BEHIND).
+    x = -21.2 ... -10.2 ... 5.6        z = -7.6 .. 22   (plate at z = 0)
+                     ^ the joint
 
-Provenance: `experiments/ring_joints/tool.json`, body 1. The scene is embedded
-here rather than loaded so that flexifish.py stays a single-file generator with
-no data files beside it. `experiments/ring_joints/check_against_editor.py`
-holds the maths below to the editor's own `sceneSDF` -- currently agreeing to
-1.9e-7 mm -- so do not change it without re-running that.
+Provenance: `LinkageCut.json`, body 0, transcribed exactly -- held to the
+document itself at 8.7e-13 mm. `experiments/ring_joints/check_tool_port.py`
+holds this to the JS copy in the fish designer.
 
 Run as a script, it goes the other way and writes the solid back out as a
 MetaMeld scene, placed where a joint would sit:
@@ -48,7 +49,10 @@ F32 = np.float32
 # ======================================================================
 # The scene
 # ======================================================================
-# Exactly the `add`/`cut` nodes of tool.json that build body 1, in file order.
+# Exactly the `add`/`cut` nodes of LinkageCut.json that build body 0, in file
+# order. The document's ninth node is a disabled vertical plane -- an
+# inspection aid for looking at the section in the editor, not geometry -- and
+# is deliberately absent: `raw` has no notion of a node being off.
 # Order is load-bearing: a shape added after a cut is immune to it, which is
 # what lets the big seam cavity be body-scale without destroying the linkage
 # that passes through it.
@@ -58,28 +62,41 @@ F32 = np.float32
 #   plane      the cut removes everything below its own z
 #   r          Euler degrees; the shape is rotated Rz*Ry*Rx
 #   k          blend radius; 0 is a hard min/max
+#
+# The document carries a ninth node -- a vertical plane cut, switched off --
+# which is an inspection aid for seeing inside the shell while drawing it. It
+# is left out rather than carried disabled: `raw` has no notion of a node being
+# off, and a switched-off cut is not part of the solid.
 TOOL_NODES = [
-    ("add", "ellipsoid", 2.75, (0, 29, 27), (-42, 0, 0), (54.5, 45.5, 82.5)),
-    ("cut", "ellipsoid", 5.00, (0, 47.5, 29), (-51, 0, 0), (46, 59, 78.5)),
-    ("cut", "ellipsoid", 4.25, (0, 25, 9), (0, 0, 0), (15.5, 22, 14)),
-    ("add", "torus", 1.50, (0, 5, 15.5), (30, 0, 0), (8, 5.75, 0)),
-    ("cut", "torus", 2.00, (0, 12, 19), (0, 90, 0), (8, 3, 0)),
-    ("cut", "torus", 3.50, (0, 4.5, 15), (30, 0, 0), (8.5, 2.75, 0)),
-    ("cut", "ellipsoid", 1.50, (0, -6, 11), (-58, 0, 0), (30, 18, 14)),
-    ("cut", "plane", 2.00, (0, 0, 8), (0, 0, 0), (0, 0, 0)),
+    ("add", "ellipsoid", 0, (0, 0, 6), (0, -30, 180), (25, 25, 35)),
+    ("cut", "ellipsoid", 0, (0, 0, 6), (0, -30, 180), (23, 23, 33)),
+    ("cut", "plane", 0, (-6, 0, 0), (0, 62, 180), (0, 0, 0)),
+    ("add", "ellipsoid", 4.5, (-14.266247946197, 0, 4), (0, 0, 0), (14, 8.5, 14)),
+    ("cut", "torus", 0, (-14, 0, 4), (-86.530223807624, 0, 0), (4.5, 1.5, 0)),
+    ("cut", "ellipsoid", 1, (2, 0, 3.816466031276), (91, 13, 180), (30, 26.5, 23)),
+    ("add", "torus", 4, (-16.46241654316, 0, 0.100993474262), (-50, 0, 85), (5, 1.75, 0)),
+    ("cut", "torus", 2, (-18.269319183782, 0, 1.048664616065), (0, -39, 0), (5, 1.421467019059, 0)),
 ]
 
 # ---- the tool's own frame ---------------------------------------------
-PLATE = 8.0            # its build plate, mapped onto the generator's z = 0
-ANCHOR = 8.5           # the joint, midway between its two ring features
+PLATE = 0.0            # its build plate, mapped onto the generator's z = 0
+ANCHOR = -10.2         # the joint: the tool-x where the parting surface lands
 
-# How much body a joint consumes, in the tool's units. The bounding box is 11
-# ahead of the anchor and 35.75 behind, but most of that tail is cup wall in
-# free space: cutting a real body section, removal starts at the tool's very
-# front and has fallen to a few percent of the section by 15 behind, trailing
-# off to nothing around 22 where the walls only grazes the shoulder.
-FOOTPRINT_AHEAD = 11.0
-FOOTPRINT_BEHIND = 15.0
+# How much body a joint consumes, in the tool's units: where removal exceeds
+# 2% of its peak, measured by cutting a barrel at the reference section. Nearly
+# symmetric about the joint, unlike the old tool's 11 and 35.5, because a shell
+# centred on the parting reaches about as far each way.
+FOOTPRINT_AHEAD = 10.8
+FOOTPRINT_BEHIND = 7.5
+
+# The solid's whole bounding box about the anchor, which is a different and
+# larger thing than its footprint. The footprint says where it removes enough
+# material to matter for sizing a segment; the box says where it touches
+# anything at all. A thin feature standing off the body -- the dorsal fin --
+# is severed by a graze that removes almost nothing, so it has to be kept out
+# of the box, not merely out of the footprint.
+BOX_AHEAD = 11.0
+BOX_BEHIND = 15.8
 
 # How close together two of these joints may sit, in tool units.
 #
@@ -87,23 +104,25 @@ FOOTPRINT_BEHIND = 15.0
 # two shrouds instead of being nothing but shroud. Fewer, longer segments is
 # what this joint asks for, and this is the figure the layouts aim at.
 #
-# SHATTER_SPACING is where it stops working at all: the second tool cuts
-# through the first one's interlock and the body falls apart. Measured at
-# 0.4 mm voxels by cutting one fish with two tools at a range of spacings and
-# labelling the result -- 12 apart gives three linked pieces, 10 gives five,
-# two of them debris under 2 mm3.
+# SHATTER_SPACING is where it stops working at all: the second cut reaches
+# through the first one's interlock and the middle piece comes free. Measured
+# at 0.3 mm voxels by cutting a barrel with two of these at a range of
+# spacings -- 10 apart still gives three linked pieces, 8 gives three that are
+# not linked, plus debris of 0.03 mm3.
 MIN_SPACING = FOOTPRINT_AHEAD + FOOTPRINT_BEHIND
-SHATTER_SPACING = 12.0
+SHATTER_SPACING = 10.0
 
-# The body it was authored against: half-width 20.5 mm, and 38.75 mm of height
-# above the plate. Scales are quoted against these.
-HW_REF, H_REF = 20.5, 38.75
+# The section this is scaled against: half-width 10 mm, 20 mm tall. Not the
+# largest it can sever -- that is about 11 x 22, where the clearance has
+# thinned to 0.6 mm -- but the size at which it still has margin. Sections
+# larger than this are not a problem: the tool scales up with them.
+HW_REF, H_REF = 10.0, 20.0
 
-# Its separating thickness at scale 1.0, measured by cutting a plain barrel and
-# taking the distance between the two pieces. Left alone, this is the clearance
-# a joint gets, and it scales with the tool -- so it shrinks along the fish
-# unless `gap` pins it. Nothing else in the build adds to it.
-THICKNESS = 1.20
+# Its separating thickness at the reference section, measured by cutting a
+# plain barrel and taking the distance between the two pieces. This is the
+# shell's wall, and it is the clearance a joint gets. It scales with the tool,
+# so it shrinks along the fish unless `gap` pins it.
+THICKNESS = 0.90
 
 
 # ======================================================================
@@ -166,7 +185,9 @@ def tool_sdf(X, Y, Z, xa=0.0, s_wide=1.0, s_long=1.0, s_tall=1.0, gap=None,
              lift=0.0):
     """The tool placed at joint `xa`, in the generator's coordinates.
 
-    The generator runs x nose->tail and the tool runs y, so the axes swap.
+    The generator runs x nose->tail and so does this solid, so the axes map
+    straight through -- unlike the tool this replaced, which ran along its own
+    +y and needed a swap.
     Scaling is per-axis: a tall narrow section gets a tall narrow tool. The
     result is multiplied by the smallest scale, which keeps it an
     under-estimate of true distance -- what a field being subtracted has to be
@@ -182,8 +203,8 @@ def tool_sdf(X, Y, Z, xa=0.0, s_wide=1.0, s_long=1.0, s_tall=1.0, gap=None,
     by default, which is where a joint wants to be on a fish that prints
     belly-down; lifting it is for looking at what the cut is doing, not
     something a finished print usually wants."""
-    tx = (Y / s_wide).astype(F32)
-    ty = ((X - xa) / s_long + ANCHOR).astype(F32)
+    tx = ((X - xa) / s_long + ANCHOR).astype(F32)
+    ty = (Y / s_wide).astype(F32)
     tz = ((Z - lift) / s_tall + PLATE).astype(F32)
     s = min(s_wide, s_long, s_tall)
     d = raw(tx, ty, tz) * s
@@ -214,45 +235,20 @@ def footprint(s_long):
 # ======================================================================
 # Handing it to MetaMeld
 # ======================================================================
-# The tool was authored in the editor and this is the way back, so it can be
-# placed against a baked fish by eye instead of only by `scales_for`. The two
-# frames differ: the tool runs along its own +y with its plate at z = PLATE,
-# the generator runs x nose->tail with the plate at z = 0. `tool_sdf` maps one
-# to the other with t = S.w/s + c, S being the x/y swap, so the scene has to
-# carry S the other way.
+# The tool was authored in MetaMeld and this is the way back, so it can be
+# placed against a baked fish by eye instead of only by `scales_for`.
 #
-# S is a reflection, so a shape's rotation cannot simply be multiplied by it --
-# S.R is not a rotation. What works is the conjugate S.R.S, which is, paid for
-# by evaluating the shape in a locally swapped frame. Every primitive here
-# survives that swap: a torus and a plane are about their local z and do not
-# notice, an ellipsoid does, and gets its first two diameters exchanged.
+# This got much simpler when the solid changed. The old tool ran along its own
+# +y, so the mapping carried an x/y swap -- a reflection, which a rotation
+# cannot simply be multiplied by, so each shape's rotation had to be conjugated
+# and an ellipsoid's first two diameters exchanged. This solid runs the way the
+# generator does. There is no swap left to undo: the rotations come back
+# unchanged and only the centres move.
 #
 # Scaling is uniform only. `tool_sdf` scales each axis on its own, which is a
 # thing the editor's shape list cannot say -- a rotated ellipsoid stretched
 # along world x is no longer an ellipsoid about its own axes. Export at the
 # scale you want, or export at 1 and scale it in MetaMeld.
-_SWAP = np.array([[0.0, 1, 0], [1, 0, 0], [0, 0, 1]])
-
-
-def _euler_to_m(r):
-    """Rz*Ry*Rx, degrees in -- the editor's convention."""
-    a, b, c = np.deg2rad(r)
-    ca, sa, cb, sb, cc, sc = (np.cos(a), np.sin(a), np.cos(b),
-                              np.sin(b), np.cos(c), np.sin(c))
-    return np.array([
-        [cc * cb, cc * sb * sa - sc * ca, cc * sb * ca + sc * sa],
-        [sc * cb, sc * sb * sa + cc * ca, sc * sb * ca - cc * sa],
-        [-sb,     cb * sa,                cb * ca]])
-
-
-def _m_to_euler(m):
-    b = np.arcsin(np.clip(-m[2, 0], -1.0, 1.0))
-    if abs(np.cos(b)) > 1e-7:
-        a = np.arctan2(m[2, 1], m[2, 2])
-        c = np.arctan2(m[1, 0], m[0, 0])
-    else:                                   # pitch at +/-90: roll takes it all
-        a, c = np.arctan2(-m[1, 2], m[1, 1]), 0.0
-    return [float(np.rad2deg(v)) for v in (a, b, c)]
 
 
 def to_metameld(xa=0.0, scale=1.0, lift=0.0, name="Cutter"):
@@ -266,20 +262,21 @@ def to_metameld(xa=0.0, scale=1.0, lift=0.0, name="Cutter"):
     s = float(scale)
     nodes = []
     for op, kind, k, p, r, dim in TOOL_NODES:
-        # centre: out of the tool's frame, then swapped into the fish's
-        w = _SWAP @ (np.array(p, float) - np.array([0.0, ANCHOR, PLATE]))
+        # out of the tool's frame and into the fish's: the axes already agree,
+        # so this is a translation and a scale and nothing else
+        w = np.array(p, float) - np.array([ANCHOR, 0.0, PLATE])
         pos = [w[0] * s + xa, w[1] * s, w[2] * s + lift]
-        rot = _m_to_euler(_SWAP @ _euler_to_m(r) @ _SWAP)
-        # a torus carries radii and an ellipsoid diameters -- both just scale.
-        # The local x/y swap the conjugation leaves behind is invisible to a
-        # torus (it is about its local z) but not to an ellipsoid.
-        d = [dim[1], dim[0], dim[2]] if kind == "ellipsoid" else list(dim)
-        d = [0, 0, 0] if kind == "plane" else [v * s for v in d]
+        rot = list(r)
+        # a torus carries radii and an ellipsoid diameters -- both just scale
+        d = [0, 0, 0] if kind == "plane" else [v * s for v in dim]
         nodes.append(dict(t=kind, on=True, op=op, k=k * s, b=0,
                           tg=None if op == "add" else [0], fi=0,
-                          p=[round(v, 4) for v in pos],
-                          r=[round(v, 4) for v in rot],
-                          d=[round(v, 4) for v in d], round=0,
+                          # 6 places, not 4: the node centres carry twelve
+                          # significant figures, and rounding to 4 moved the
+                          # exported solid by 5e-5 mm against tool_sdf
+                          p=[round(v, 6) for v in pos],
+                          r=[round(v, 6) for v in rot],
+                          d=[round(v, 6) for v in d], round=0,
                           mx=False, my=False, mz=False))
     return {"version": 2, "bodies": [{"id": 0, "name": name, "on": True}],
             "nodes": nodes}
@@ -320,8 +317,10 @@ if __name__ == "__main__":
 
         s = a.scale
         rng = np.random.default_rng(7)
-        lo = [a.at - 20 * s, -35 * s, a.lift - 6 * s]
-        hi = [a.at + 45 * s, 35 * s, a.lift + 50 * s]
+        # the solid's own extent with a margin: tool x -21.2..5.6 about an
+        # anchor at -10.2, y +/-12, z -7.6..22 off a plate at 0
+        lo = [a.at - 14 * s, -15 * s, a.lift - 11 * s]
+        hi = [a.at + 19 * s, 15 * s, a.lift + 26 * s]
         P = rng.uniform(lo, hi, size=(20000, 3))
         X, Y, Z = (P[:, i].astype(F32) for i in range(3))
         mine = tool_sdf(X, Y, Z, a.at, s, s, s, lift=a.lift)

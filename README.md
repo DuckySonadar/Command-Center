@@ -360,9 +360,53 @@ what buy bigger joints.
 
 `joint_style='tool'` builds each joint by subtracting `joint_tool.py`'s
 solid, which sizes and places itself against the local section — that
-self-placement is the whole point of the linkage. Three parameters ride
-on top of it, for when the automatic answer lands somewhere you would
-rather it did not:
+self-placement is the whole point of the linkage.
+
+The solid is a thin ellipsoidal **shell** with a pair of rings passing
+through it. Subtracting a shell splits what is inside from what is
+outside, so you get a ball in a socket with the shell's wall as the
+printed clearance, and the rings are what stop the ball coming back out.
+The important consequence is that the shell has to **contain** the body
+section: it scales up until it does. On the default fish that is 1.87×,
+and a joint then wants about **34 mm of body length** to itself against
+the old cup's 25 mm — so expect noticeably fewer segments. That trade
+is the point of the design, not a regression.
+
+The wall scales with it in both directions, so where the section is
+*small* the clearance gets small too: at the tail root of the default
+fish the tool comes out at 0.69× and the joint clears by 0.62 mm. Under
+the `clearance` your material needs, the generator says so and points at
+`joint_gap`, which pins the wall at a fixed width instead.
+
+Reach is the other thing to plan around. It scales with the shell, so
+on the default fish the solid touches anything within roughly **30 mm
+behind** a joint and **21 mm ahead** of it; a taller body reaches
+further still. Over most of that span it removes almost nothing,
+which is fine for the body — but a thin fin only needs to be grazed to
+be severed into a loose part. The generator checks the dorsal and pelvic
+fins against that span and refuses to build rather than hand you a fish
+with a fin lying next to it, naming the fin and the span it landed in.
+The fixes are to move the fin (`len_nose_to_dorsal`), shorten
+`head_length`, or fall back to `joint_style='ball'`. The stock blob fish
+does not clear it: its dorsal fin sits at x = 47–63, inside the first
+joint's reach. `len_nose_to_dorsal=72` moves it out, and that fish then
+builds its 5 parts — head, one segment, tail root and both pelvic fins —
+with `n_segments` cut from 5 to 1 along the way, each step said out loud.
+
+`n_segments` is a ceiling for this linkage, not an instruction. The
+generator lays out each candidate count and measures the gaps it actually
+produced, stepping down until they clear — the layout slides its cuts to
+centre the dorsal fin in a segment, so a count whose *average* spacing
+looks fine can still put two joints 8 mm apart, and two ring joints that
+close together leave a segment made of nothing but their own shrouds.
+
+One reporting note: where the wall is thin the mesher sheds a couple of
+near-zero-volume slivers. They are counted as `specks` beside the shell
+count rather than as parts, so they no longer read as a fused or orphaned
+piece; anything above 1 mm³ still counts as a real shell.
+
+Three parameters ride on top of the automatic placement, for when the
+answer lands somewhere you would rather it did not:
 
 | knob | default | what it does |
 |------|---------|--------------|
