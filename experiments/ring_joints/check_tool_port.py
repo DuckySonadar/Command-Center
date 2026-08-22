@@ -102,19 +102,24 @@ def main():
         return 0
 
     rng = np.random.default_rng(11)
-    # the tool's own frame: x across, y along, z up from its plate at 8
-    raw = rng.uniform([-30, -6, 4], [30, 48, 54], size=(4000, 3))
+    # the solid's own frame, with a margin: x -21.2 .. 5.6 about an anchor at
+    # -10.2, y +/-12, z -7.6 .. 22 off a plate at 0
+    raw = rng.uniform([-26, -16, -12], [11, 16, 27], size=(4000, 3))
     # one joint, placed the way a fish places it and then moved by hand
     jd = dict(xa=62.5, xt=62.5 + 7.5, lift=3.0,
               sWide=0.82, sLong=1.15, sTall=1.15)
     gap = 0.9
-    placed = rng.uniform([jd["xt"] - 20, -30, -4], [jd["xt"] + 50, 30, 55],
-                         size=(4000, 3))
+    placed = rng.uniform([jd["xt"] - 15, -16, jd["lift"] - 11],
+                         [jd["xt"] + 20, 16, jd["lift"] + 27], size=(4000, 3))
 
-    # the placement pipeline, on the default fish. The pelvic fin comes out
-    # because a ring joint reaches straight through its socket and the
-    # generator refuses to build that -- see FishBuilder._check_side_fins.
-    shape = {"curves": {"pelvic_fin": None}}
+    # the placement pipeline, on the default fish. Both fins come out: a ring
+    # joint reaches straight through the pelvic socket, and the cutter's box
+    # reaches far enough behind a joint to shear the dorsal fin off as a loose
+    # piece, so the generator refuses to build either -- see
+    # FishBuilder._check_side_fins and _check_dorsal_fin. This check is about
+    # where the solid gets *placed*, and finless is the configuration that
+    # exercises every joint without the build stopping first.
+    shape = {"curves": {"pelvic_fin": None, "dorsal_fin": None}}
     cfg = {"joint_style": "tool", "tool_offset": 3.5, "tool_lift": 1.25,
            "tool_scale": 0.9,
            "tool_place": [{"off": -6.0, "long": 1.3},

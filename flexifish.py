@@ -300,12 +300,15 @@ class FishBuilder:
             raise SystemExit(f"unknown joint_style {p.joint_style!r} "
                              "(expected 'ball', 'tool' or 'none')")
         if p.joint_style == "tool":
+            # picks the count by running the layout, so it lands settled
             self.p = p = self._fit_tool_segments(p)
-        self._layout()
+        else:
+            self._layout()
         self._size_joints()
         # after sizing, not before: how much body a joint disturbs is not
         # known until it has been sized, and a ring joint reaches far
         self._check_side_fins()
+        self._check_dorsal_fin()
 
     # ---------------- core body (blobs + flat belly) ----------------
     def core(self, X, Y, Z):
@@ -388,10 +391,18 @@ class FishBuilder:
             while (rem - nb) > 0 and (last - b) / (rem - nb) < p.min_seg_len:
                 nb += 1
             nb = max(0, min(rem, nb))
-            if nb == 0:                      # widen dorsal segment forward,
+            if rem == 0:
+                # one segment for the whole articulated span, so it is the
+                # dorsal segment and there is nothing to centre it against.
+                # Both branches below fire when rem is 0 and the second
+                # overwrites the first with a mirrored `a` that is outside
+                # the body, which then fails the check -- a fish that can
+                # only take one joint pair is a fish, not an error.
+                a, b = first, last
+            elif nb == 0:                    # widen dorsal segment forward,
                 a = first                    # keeping the fin at its center
                 b = 2 * xd - a
-            if rem - nb == 0:
+            elif rem - nb == 0:
                 b = last
                 a = 2 * xd - b
             if a < first - 1e-6 or b > last + 1e-6:
@@ -409,7 +420,7 @@ class FishBuilder:
                 f"segments as short as {np.diff(self.cuts).min():.1f} mm; "
                 f"reduce n_segments or move the dorsal fin")
 
-    def _joint_spans(self):
+    def _joint_spans(self, box=False):
         """How much of the body's *skin* each joint disturbs, as (x0, x1).
 
         A ball joint is a hollow on the centreline: the only thing it does
@@ -424,10 +435,55 @@ class FishBuilder:
         out = []
         for j in self.joints:
             if p.joint_style == "tool":
-                out.append((j["xt"] - j["ahead"], j["xt"] + j["behind"]))
+                if box:
+                    out.append((j["xt"] - joint_tool.BOX_AHEAD * j["s_long"],
+                                j["xt"] + joint_tool.BOX_BEHIND * j["s_long"]))
+                else:
+                    out.append((j["xt"] - j["ahead"], j["xt"] + j["behind"]))
             else:
                 out.append((j["xa"] - p.face_gap / 2, j["xa"] + p.face_gap / 2))
         return out
+
+    def _dorsal_span(self):
+        """Where the dorsal fin actually sits, clamped to what survives the
+        trim. The NURBS builder draws its fin instead of deriving it from
+        `dorsal_length`, and overrides this."""
+        p = self.p
+        lo, hi = self.dorsal_trim
+        return (max(p.len_nose_to_dorsal - p.dorsal_length / 2, lo),
+                min(p.len_nose_to_dorsal + p.dorsal_length / 2, hi))
+
+    def _check_dorsal_fin(self):
+        """The dorsal fin has to clear the cutter's whole box, not its
+        footprint.
+
+        The footprint is where the solid removes enough material to matter
+        when sizing a segment. The fin is a 2.8 mm sheet standing off the
+        back, so the shell passing through it removes a volume far under that
+        threshold and severs it completely -- the fin comes off the printer as
+        a separate piece and nobody notices until the shell count is read.
+
+        Only the ring linkage reaches far enough for this to happen; a ball
+        joint is a hollow on the centreline and never touches the fin."""
+        p = self.p
+        if p.joint_style != "tool" or not self.joints:
+            return
+        a, b = self._dorsal_span()
+        if b <= a:
+            return                                # no fin left to protect
+        for x0, x1 in self._joint_spans(box=True):
+            if x0 < b and x1 > a:
+                raise SystemExit(
+                    f"the dorsal fin (x = {a:.1f} .. {b:.1f}) is inside the "
+                    f"reach of the ring cutter at x = {x0:.1f} .. {x1:.1f}, "
+                    f"which would slice it off the back as a loose piece. "
+                    f"This cutter reaches about "
+                    f"{joint_tool.BOX_BEHIND * self.joints[0]['s_long']:.0f} mm "
+                    f"behind a joint and "
+                    f"{joint_tool.BOX_AHEAD * self.joints[0]['s_long']:.0f} mm "
+                    f"ahead of one, so the fin needs that much clear body "
+                    f"around it: move it with len_nose_to_dorsal, shorten "
+                    f"head_length, or use joint_style='ball'.")
 
     def _check_side_fins(self):
         """Every side-fin socket has to sit inside ONE piece of the body.
@@ -589,10 +645,9 @@ class FishBuilder:
         back a fish whose segments came out fused to each other.
 
         Sized on the section at `first`, where the body is deepest and the
-        tool therefore largest. Since the layouts space their cuts evenly, one
-        conservative figure is the right shape of answer."""
-        need = (joint_tool.MIN_SPACING * self.p.tool_scale
-                * joint_tool.scales_for(self, first)[1])
+        tool therefore largest -- one conservative figure for the whole
+        fish."""
+        need = self._tool_spacing()
         m = max(1, min(n, int((last - first) // need)))
         if m != n:
             self.warnings.append(
@@ -601,6 +656,11 @@ class FishBuilder:
                 f"{need:.1f} mm; building {m} instead. Lengthen the fish for "
                 f"more, or use joint_style='ball'.")
         return m
+
+    def _tool_spacing(self):
+        """Body length one ring joint claims, at this fish's tool scale."""
+        return (joint_tool.MIN_SPACING * self.p.tool_scale
+                * joint_tool.scales_for(self, self.p.head_length)[1])
 
     def tool_place(self, i):
         """The per-joint nudge for joint `i`, defaulted.
@@ -617,8 +677,65 @@ class FishBuilder:
         return out
 
     def _fit_tool_segments(self, p):
-        return replace(p, n_segments=self._tool_segment_cap(
-            p.head_length, self.L - p.tail_root_len, p.n_segments))
+        """Choose the segment count *and* leave its layout in place.
+
+        Overrides owe the caller both halves of that: `__init__` does not
+        call `_layout` itself for this style, because the count cannot be
+        chosen without laying candidates out and the work would be repeated.
+
+
+        The even-spacing cap below is only the opening bid. `_layout` does
+        not space its cuts evenly -- it slides them to centre the dorsal fin
+        in a segment -- so a count that passes the average can still come
+        back with two cuts almost on top of each other, and two ring joints
+        that close together leave a segment made entirely of their shrouds.
+        The cap cannot see that, because the layout has not run yet. So run
+        it, measure the gaps it actually produced, and step down until they
+        clear. A count `_layout` rejects outright is treated the same way:
+        too many, try fewer."""
+        first, last = p.head_length, self.L - p.tail_root_len
+        self.p = p = replace(p, n_segments=self._tool_segment_cap(
+            first, last, p.n_segments))
+        need = self._tool_spacing()
+        asked = p.n_segments
+        refused = None
+        for n in range(asked, 0, -1):
+            self.p = replace(p, n_segments=n)
+            try:
+                self._layout()
+            except SystemExit as e:
+                refused = str(e)
+                continue
+            if len(self.cuts) < 2 or float(np.diff(self.cuts).min()) >= need:
+                if n != asked:
+                    self.warnings.append(
+                        f"joint_style='tool': {asked} segments put two joints "
+                        f"{self._closest_cut_gap(p, asked):.1f} mm apart once "
+                        f"the dorsal fin was centred, and a ring joint needs "
+                        f"{need:.1f} mm; building {n} instead. Move the fin "
+                        f"with len_nose_to_dorsal for more.")
+                return self.p
+        raise SystemExit(
+            f"no segment count works for joint_style='tool' on this fish: a "
+            f"ring joint needs {need:.1f} mm of body to itself and the "
+            f"articulated span is {last - first:.1f} mm"
+            + (f" (the layout also refused: {refused})" if refused else "")
+            + ". Lengthen the fish, or use joint_style='ball'.")
+
+    def _closest_cut_gap(self, p, n):
+        """The tightest gap the rejected count would have produced, for the
+        warning text. Re-run rather than cached: the loop above has already
+        overwritten `self.cuts` by the time the message is written."""
+        keep = self.p
+        try:
+            self.p = replace(p, n_segments=n)
+            self._layout()
+            return float(np.diff(self.cuts).min()) if len(self.cuts) > 1 else 0.0
+        except SystemExit:
+            return 0.0
+        finally:
+            self.p = keep
+            self._layout()
 
     def _size_tool_joints(self):
         """Nothing to solve -- the tool overshoots the body on purpose, so the
@@ -655,10 +772,16 @@ class FishBuilder:
                     f"rings are eroded that much too and may end up slack")
             if self.joints[-1]["lift"] > 0.05:
                 lifted.append(i)
-            if self.joints[-1]["gap"] < 0.3:
+            # The shell's own wall *is* the printed clearance, and it scales
+            # with the section -- so a joint near the tail root can come out
+            # tighter than the filament will resolve. Judge it against the
+            # material's clearance rather than a fixed floor: below that, the
+            # two halves print welded together.
+            if self.joints[-1]["gap"] < p.clearance:
                 self.warnings.append(
                     f"joint at x={xa:.1f}: only {self.joints[-1]['gap']:.2f} mm "
-                    f"of clearance -- the section is small, so the tool is "
+                    f"of clearance, under the {p.clearance:.2f} mm this "
+                    f"material needs -- the section is small, so the tool is "
                     f"small. Set joint_gap to pin it, or shorten the fish.")
             # The joints are laid out evenly, but the dorsal fin is centred in
             # its own segment whose length is fixed by the fin -- so one pair
@@ -1032,7 +1155,22 @@ def write_stl(path, verts, faces):
         f.write(rec.tobytes())
 
 
+SPECK_VOL = 1.0        # mm^3; below this a shell is a meshing artefact
+
+
 def mesh_stats(verts, faces):
+    """(manifold, printable shell count, speck count).
+
+    Shells are counted as printable parts, which is what the caller compares
+    against its expectation -- so the near-zero-volume slivers the mesher
+    leaves where a thin wall grazes the voxel grid are counted separately
+    instead. A ring joint's shell wall can be well under a millimetre where
+    the section is small, and it sheds a couple of eight-triangle specks
+    there; calling those "orphaned parts" sends people looking for a problem
+    that is not in the model. The floor is far below any real piece -- the
+    smallest thing this generator makes on purpose is a ~400 mm^3 fin, and a
+    severed fin tip runs to hundreds of mm^3 -- so a genuine loose part still
+    shows up in the count."""
     e = np.sort(np.concatenate([faces[:, [0, 1]], faces[:, [1, 2]],
                                 faces[:, [2, 0]]]), axis=1)
     _, counts = np.unique(e, axis=0, return_counts=True)
@@ -1051,8 +1189,14 @@ def mesh_stats(verts, faces):
             b = find(tri[k])
             if a != b:
                 parent[b] = a
-    shells = len({find(v) for v in faces.ravel()})
-    return manifold, shells
+    root = np.array([find(int(i)) for i in faces[:, 0]])
+    a, b, c = verts[faces[:, 0]], verts[faces[:, 1]], verts[faces[:, 2]]
+    tri6 = np.einsum("ij,ij->i", a, np.cross(b, c))     # 6x the signed volume
+    vol = {}
+    for r, t in zip(root, tri6):
+        vol[r] = vol.get(r, 0.0) + float(t)
+    specks = sum(abs(v) / 6.0 < SPECK_VOL for v in vol.values())
+    return manifold, len(vol) - specks, specks
 
 
 def render_png(path, verts, faces, title=""):
@@ -1135,13 +1279,15 @@ def main(argv=None):
 
     verts, faces = mesh(b, res)
     write_stl(args.out, verts, faces)
-    man, shells = mesh_stats(verts, faces)
+    man, shells, specks = mesh_stats(verts, faces)
     # a segmented fish is head + n segments + tail root; an unsegmented one is
     # a single body. The side fins are free either way.
     body_pieces = 1 if p.joint_style == "none" else p.n_segments + 2
     expected = body_pieces + (2 if p.pelvic_length > 0.5 else 0)
+    sp = f", {specks} speck{'s' if specks > 1 else ''}" if specks else ""
     print(f"{args.out}: {len(faces)} tris, manifold={man}, "
-          f"shells={shells} (expected {expected})  [{time.time()-t0:.0f}s]")
+          f"shells={shells} (expected {expected}){sp}  "
+          f"[{time.time()-t0:.0f}s]")
     if shells != expected and not args.preview:
         print("WARNING: shell count mismatch -- parts may be fused or "
               "orphaned. Inspect before printing.")
@@ -1152,7 +1298,7 @@ def main(argv=None):
         cv, cf = mesh(b, res, sub=(lo, hi))
         cp = args.out.replace(".stl", "") + "_joint_test.stl"
         write_stl(cp, cv, cf)
-        cm, cs = mesh_stats(cv, cf)
+        cm, cs, _ = mesh_stats(cv, cf)
         note = "" if isolated else "; neighbouring joints reach into this one"
         print(f"{cp}: {len(cf)} tris, manifold={cm}, shells={cs} "
               f"(expected 2{note})")

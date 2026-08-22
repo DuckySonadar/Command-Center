@@ -54,8 +54,15 @@ def editor_source():
 
 def extract(src):
     """Lift the evaluator out of the editor. Anchored on declarations rather
-    than line numbers so it survives edits above and below them."""
-    out = []
+    than line numbers so it survives edits above and below them.
+
+    The three anchors are spans, not an ordering: taking them as written once
+    emitted `PRIMS` twice and node refused the file, because the SinterForm
+    split moved `smin` above `PRIMS` and the smin span then swallowed it.
+    So resolve them to intervals, merge whatever overlaps, and emit the union
+    in file order -- which is the same text whatever order the editor keeps
+    its declarations in."""
+    spans = []
     for start, end in (("const PRIMS = {", "const PRIM_KEYS"),
                        ("function smin(", "// The JS twin"),
                        ("function sceneSDF(", "\n}\n")):
@@ -63,7 +70,17 @@ def extract(src):
         if i < 0:
             raise SystemExit(f"cannot find {start!r} in the editor")
         j = src.find(end, i + len(start))
-        out.append(src[i:j + (len(end) if end == "\n}\n" else 0)])
+        if j < 0:
+            raise SystemExit(f"cannot find {end!r} after {start!r}")
+        spans.append((i, j + (len(end) if end == "\n}\n" else 0)))
+
+    out, spans = [], sorted(spans)
+    for lo, hi in spans:
+        if out and lo <= out[-1][1]:
+            out[-1] = (out[-1][0], max(out[-1][1], hi))
+        else:
+            out.append((lo, hi))
+    out = [src[lo:hi] for lo, hi in out]
     out.append("const hits = (n, id) => !n.tg || n.tg.indexOf(id) >= 0;\n")
     return "\n".join(out)
 
