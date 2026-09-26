@@ -164,20 +164,32 @@ the tool ships its own tiny model runner. If the `rembg` package happens
 to be installed it is used instead, but it's *not* required (rembg pulls
 in numba/llvmlite, which don't have prebuilt wheels on every
 Python/macOS combination and then demand cmake + LLVM to compile).
-`--roi`, `--min-area`, `--keep-largest`, `--keep-holes`, `--shrink` and
-`--feather` still apply with `--ai`; the color options don't.
+`--roi`, `--min-area`, `--keep-largest`, `--keep-holes`, `--grabcut`,
+`--shrink` and `--feather` still apply with `--ai`; the color options
+don't. Unlike the color engine, `--ai` leaves large enclosed gaps (the
+space inside a curled tail) transparent and fills only pinholes.
 
 U^2-Net works on a 320x320 grid internally, so on a 12 MP photo its edge
 is naturally a wide soft band. To tighten a halo: raise
 `--ai-threshold` (0.5 default → try 0.7), add `--shrink 8-15`, and
-finish with a small `--feather 2-3`.
+finish with a small `--feather 2-3`. Add `--grabcut 3` to trim slivers
+of background and contact shadows too fine for the model to see.
+
+**Use it for single objects, not group shots.** U^2-Net is a
+*salient-object* model: it looks for the photo's main subject. On the
+group shots here it silently dropped a whole toy (the axolotl in
+IMG_2154, the green dragon in IMG_2155), so the color engine is the
+better choice when several objects share the frame.
 
 ### Recipes from the test photos
 
 Worked starting points, tuned on the photos in this repo:
 
 ```bash
-# single toy on a dark table, attached shadow (IMG_2128)
+# single toy on a dark table, attached shadow (IMG_2128) — the AI
+# engine is cleanest here; the color-engine version also works
+python3 bg_remove.py IMG_2128.HEIC out.png --ai --keep-largest 1 \
+  --grabcut 3 --ai-threshold 0.7 --shrink 10 --feather 3
 python3 bg_remove.py IMG_2128.HEIC out.png --bg-colors 3 --tolerance auto \
   --lightness-weight 0.4 --sat-weight 2 --min-area 5000 --keep-largest 1 \
   --grabcut 3 --feather 2
@@ -201,14 +213,16 @@ python3 bg_remove.py IMG_2161.jpeg out.png --bg-colors 3 --tolerance 40 \
 
 # toy on a leather mat whose glare reflects the toy's own blue
 # (IMG_2140, IMG_2142): color logic can't separate — use the AI engine
-python3 bg_remove.py IMG_2140.HEIC out.png --ai --keep-largest 1 --feather 2
+python3 bg_remove.py IMG_2140.HEIC out.png --ai --keep-largest 1 \
+  --grabcut 3 --ai-threshold 0.7 --shrink 10 --feather 3
 ```
 
 General tuning order: get the background model right first (`--bg-from`,
 `--bg-colors`), then set `--tolerance` (start with `auto`, check the
 `--debug` preview), then clean up (`--roi`, `--keep-largest`,
 `--min-area`), and reach for `--grabcut` when shadows or reflections
-stay attached to the object.
+stay attached to the object. If no color setting separates the object
+from the backdrop and it's the only subject, switch to `--ai`.
 
 ### Border prediction (`--predict`)
 
