@@ -320,6 +320,22 @@ def _u2net_alpha(img):
     return np.clip(alpha, 0.0, 1.0)
 
 
+def fill_small_holes(mask, max_area):
+    """Fill enclosed background regions smaller than max_area px — the
+    pinholes a threshold leaves — while larger enclosed gaps (the space
+    inside a curled tail, between a wing and a body) stay open."""
+    inv = (mask == 0).astype(np.uint8)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(inv, 4)
+    h, w = mask.shape
+    out = mask.copy()
+    for i in range(1, n):
+        x, y, bw, bh, area = stats[i]
+        touches_edge = x == 0 or y == 0 or x + bw == w or y + bh == h
+        if not touches_edge and area < max_area:
+            out[labels == i] = 255
+    return out
+
+
 def shrink_mask(mask, px):
     """Pull the mask edge inward by px pixels (a compositor's 'choke');
     negative px pushes it outward. This, not blur, is the cure for a
@@ -694,7 +710,9 @@ def main():
                    help="drop connected components smaller than this (default 400)")
     g.add_argument("--keep-holes", action="store_true",
                    help="keep background-colored holes inside objects "
-                        "transparent (default: holes are filled)")
+                        "transparent (default: holes are filled). With "
+                        "--ai only pinholes are filled anyway; this keeps "
+                        "those open too")
     g.add_argument("--keep-largest", type=int, default=0, metavar="N",
                    help="keep only the N largest objects — drops desk "
                         "clutter that isn't background-colored (default 0 "
@@ -704,7 +722,9 @@ def main():
                         "iterations (try 3). Fits color-mixture models to "
                         "object and backdrop with spatial smoothness — "
                         "rescues shots where glare or sheen shares colors "
-                        "with the object, at the cost of a few seconds")
+                        "with the object, at the cost of a few seconds. "
+                        "With --ai it trims slivers and contact shadows "
+                        "too fine for the model's 320px view")
     g.add_argument("--roi", metavar="FX,FY,FW,FH",
                    help="only look for objects inside this rectangle "
                         "(fractional: x,y,width,height, e.g. "
@@ -744,7 +764,8 @@ def main():
                         "weights. For photos color logic can't handle: "
                         "glare or reflections sharing the object's color. "
                         "--roi/--min-area/--keep-largest/--keep-holes/"
-                        "--feather still apply; color options don't")
+                        "--grabcut/--shrink/--feather still apply; color "
+                        "options don't")
 
     g = ap.add_argument_group("edges & output")
     g.add_argument("--shrink", type=float, default=0.0, metavar="PX",
@@ -837,26 +858,41 @@ def run_ai(img, args):
     """Mask via the U^2-Net model; returns (alpha, dist, tolerance)."""
     raw = ai_alpha(img)
     thresh = args.ai_threshold
-    mask = (raw >= thresh).astype(np.uint8) * 255
-    mask = clean_mask(mask, 0, 0, args.min_area,
-                      fill_holes=not args.keep_holes,
-                      keep_largest=args.keep_largest)
+
+    def tidy(m):
+        # Unlike the color engine, the model already knows what's inside
+        # an object, so only pinholes get filled; big enclosed gaps it
+        # left open are real background.
+        m = clean_mask(m, 0, 0, args.min_area, fill_holes=False,
+                       keep_largest=args.keep_largest)
+        if not args.keep_holes:
+            m = fill_small_holes(m, max(args.min_area, 1))
+        return m
+
+    mask = tidy((raw >= thresh).astype(np.uint8) * 255)
     if mask.max() == 0:
         sys.exit("error: the AI model found no object (or it was smaller "
                  "than --min-area)")
+    if args.grabcut > 0:
+        # The model sees the photo at 320x320; GrabCut at full detail
+        # cuts slivers and contact shadows the model can't resolve.
+        mask = tidy(grabcut_refine(img, mask, iters=args.grabcut))
+        if mask.max() == 0:
+            sys.exit("error: GrabCut removed everything — try without "
+                     "--grabcut")
     if args.shrink:
         mask = shrink_mask(mask, args.shrink)
         if mask.max() == 0:
             sys.exit("error: --shrink removed everything — use a smaller "
                      "value")
     alpha = raw.copy()
-    if args.shrink > 0:             # choked: cut hard at the new edge
+    if args.shrink > 0 or args.grabcut > 0:  # cut hard at the refined edge
         alpha[mask == 0] = 0.0
     else:                           # keep the model's soft fringe nearby
         near = cv2.dilate(mask, np.ones((11, 11), np.uint8))
         alpha[near == 0] = 0.0      # drop discarded components' mattes
-    if not args.keep_holes:
-        alpha[(mask > 0) & (raw < thresh)] = 1.0  # holes clean_mask filled
+    # pinholes that got filled, and area GrabCut added, become opaque
+    alpha[(mask > 0) & (raw < thresh)] = 1.0
     if args.feather > 0:
         alpha = cv2.GaussianBlur(alpha, (0, 0), args.feather)
         alpha *= cv2.dilate(mask, np.ones((3, 3), np.uint8)) > 0
